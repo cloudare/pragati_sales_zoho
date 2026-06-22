@@ -39,10 +39,10 @@ class Settings(BaseSettings):
     tally_api_key: str = "pragati-tally-shared-key-change-me"
 
     # Zoho
-    zoho_client_id: str = ""
-    zoho_client_secret: str = ""
-    zoho_refresh_token: str = ""
-    zoho_org_id: str = ""
+    zoho_client_id: str = "1000.RWK99OIJQIYPKB8WMPLT1YCM0142LL"
+    zoho_client_secret: str = "cf93079323600910dc24b6c9eab80617f8767b900b"
+    zoho_refresh_token: str = "1000.36287bcbf371abcf9156f8621081b1a6.c8223677ef6fd6a83544672316ce58a5"
+    zoho_org_id: str = "60043759810"
     zoho_dc: str = "in"
 
     # Files
