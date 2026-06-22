@@ -1,0 +1,346 @@
+;; ============================================================
+;; PragatiSync.tdl
+;; Cloudare Technologies — Pragati Sales
+;; Pushes Tally masters and vouchers to the backend HTTP endpoint.
+;; Backend then forwards to Zoho via API.
+;;
+;; HOW TO USE:
+;;   1. Save this file as PragatiSync.tdl
+;;   2. In Tally, F1 (Help) > TDL & Add-On > F4 (Manage Local TDLs)
+;;      OR edit tally.ini and add:
+;;         USER TDL = Yes
+;;         TDL = C:\Tally\PragatiSync.tdl
+;;   3. Restart Tally.
+;;   4. From Gateway of Tally, press Alt+P (or use new menu items added below)
+;;      to trigger sync.
+;;
+;; CONFIG: Change SyncEndpoint below to your backend URL.
+;; ============================================================
+
+[System: Variable]
+    SyncEndpoint     : "http://192.168.1.100:8000/api/tally/sync"
+    SyncApiKey       : "pragati-tally-shared-key-change-me"
+
+;; ============================================================
+;; Add menu items to Gateway of Tally
+;; ============================================================
+[#Menu: Gateway of Tally]
+    Add : Item : Before : @@locQuit : "Pragati Sync - Push Masters"  : Display : PragatiPushMasters
+    Add : Item : Before : @@locQuit : "Pragati Sync - Push Vouchers" : Display : PragatiPushVouchers
+    Add : Item : Before : @@locQuit : "Pragati Sync - Push All"      : Display : PragatiPushAll
+
+;; ============================================================
+;; REPORT: Push Masters (Ledgers + Stock Items)
+;; ============================================================
+[Report: PragatiPushMasters]
+    Form    : PragatiPushMasters
+    Title   : "Pragati Sync — Pushing Masters"
+
+[Form: PragatiPushMasters]
+    Parts   : PragatiPushMasters
+    Buttons : PragatiPushLedgersBtn, PragatiPushItemsBtn, PragatiCloseBtn
+    Background  : "Light Yellow"
+    Width   : 80% Screen
+    Height  : 40% Screen
+
+[Part: PragatiPushMasters]
+    Lines   : PragatiPushMastersHdr, PragatiPushMastersInst
+    Vertical : Yes
+
+[Line: PragatiPushMastersHdr]
+    Fields  : Simple Field
+    Local   : Field : Simple Field : Set as : "Pragati Sync — Master Data Push"
+    Local   : Field : Simple Field : Style  : "Large Bold"
+    Local   : Field : Simple Field : Align  : Centre
+
+[Line: PragatiPushMastersInst]
+    Fields  : Simple Field
+    Local   : Field : Simple Field : Set as : "Press Alt+L to push Ledgers, Alt+I to push Stock Items. Esc to close."
+    Local   : Field : Simple Field : Align  : Centre
+
+[Button: PragatiPushLedgersBtn]
+    Key     : Alt+L
+    Action  : Call : PragatiPushLedgersFn
+    Title   : "Push Ledgers"
+
+[Button: PragatiPushItemsBtn]
+    Key     : Alt+I
+    Action  : Call : PragatiPushItemsFn
+    Title   : "Push Items"
+
+[Button: PragatiCloseBtn]
+    Key     : Esc
+    Action  : Form Accept
+    Title   : "Close"
+
+;; ============================================================
+;; FUNCTION: Push Ledgers to backend
+;; ============================================================
+[Function: PragatiPushLedgersFn]
+    Variable : LedgerXML  : String
+    Variable : RespCode   : Number
+    Variable : RespBody   : String
+
+    01 : SET   : LedgerXML : $$CollectionFieldByKey:$$BuildLedgerXML:1:LedgersForSync
+    02 : HTTP POST : @@SyncEndpoint : "ASCII" : "" : LedgerXML : RespCode : RespBody : "Content-Type: application/xml" : "X-API-Key: " + @@SyncApiKey : "X-Sync-Type: ledgers"
+    03 : MSGBOX  : "Pragati Sync" : "Ledger push complete. HTTP " + $$String:##RespCode
+
+;; ============================================================
+;; FUNCTION: Push Stock Items to backend
+;; ============================================================
+[Function: PragatiPushItemsFn]
+    Variable : ItemXML    : String
+    Variable : RespCode   : Number
+    Variable : RespBody   : String
+
+    01 : SET   : ItemXML : $$CollectionFieldByKey:$$BuildItemXML:1:ItemsForSync
+    02 : HTTP POST : @@SyncEndpoint : "ASCII" : "" : ItemXML : RespCode : RespBody : "Content-Type: application/xml" : "X-API-Key: " + @@SyncApiKey : "X-Sync-Type: items"
+    03 : MSGBOX  : "Pragati Sync" : "Item push complete. HTTP " + $$String:##RespCode
+
+;; ============================================================
+;; COLLECTION: All Ledgers (with key fields for backend)
+;; ============================================================
+[Collection: LedgersForSync]
+    Type        : Ledger
+    Fetch       : Name, Parent, OpeningBalance, ClosingBalance, MailingName, LedgerMailingAddress, LedgerStateName, LedgerPincode, LedgerCountryName, IncomeTaxNumber, PartyGSTIN, Email, LedgerPhone, LedgerMobile
+    Filter      : NonGroupFilter
+
+[System: Formula]
+    NonGroupFilter : NOT $$IsBranch:$Name
+
+;; ============================================================
+;; COLLECTION: All Stock Items
+;; ============================================================
+[Collection: ItemsForSync]
+    Type        : StockItem
+    Fetch       : Name, Parent, BaseUnits, OpeningBalance, OpeningRate, OpeningValue, GSTApplicable, GSTApplicableFrom, ClosingBalance, ClosingRate, ClosingValue
+
+;; ============================================================
+;; FUNCTION: Build Ledger XML payload
+;; Returns a flat XML string that the backend parses.
+;; ============================================================
+[Function: BuildLedgerXML]
+    Variable : Result   : String : ""
+    Variable : LedName  : String
+    Variable : LedParent: String
+    Variable : LedGSTIN : String
+    Variable : LedPhone : String
+    Variable : LedEmail : String
+    Variable : LedState : String
+    Variable : OpBal    : Amount
+
+    01 : SET   : Result : "<?xml version=" + $$StrByCharCode:34 + "1.0" + $$StrByCharCode:34 + "?>" + $$NewLine
+    02 : SET   : Result : ##Result + "<TallySync type=" + $$StrByCharCode:34 + "ledgers" + $$StrByCharCode:34 + ">" + $$NewLine
+    03 : WALK COLLECTION : LedgersForSync
+    04 :     SET   : LedName  : $Name
+    05 :     SET   : LedParent: $Parent
+    06 :     SET   : LedGSTIN : $PartyGSTIN
+    07 :     SET   : LedPhone : $LedgerMobile
+    08 :     SET   : LedEmail : $Email
+    09 :     SET   : LedState : $LedgerStateName
+    10 :     SET   : OpBal    : $OpeningBalance
+    11 :     SET   : Result : ##Result + "  <Ledger>" + $$NewLine
+    12 :     SET   : Result : ##Result + "    <Name>"    + $$XMLEncode:##LedName   + "</Name>" + $$NewLine
+    13 :     SET   : Result : ##Result + "    <Parent>"  + $$XMLEncode:##LedParent + "</Parent>" + $$NewLine
+    14 :     SET   : Result : ##Result + "    <GSTIN>"   + $$XMLEncode:##LedGSTIN  + "</GSTIN>" + $$NewLine
+    15 :     SET   : Result : ##Result + "    <Phone>"   + $$XMLEncode:##LedPhone  + "</Phone>" + $$NewLine
+    16 :     SET   : Result : ##Result + "    <Email>"   + $$XMLEncode:##LedEmail  + "</Email>" + $$NewLine
+    17 :     SET   : Result : ##Result + "    <State>"   + $$XMLEncode:##LedState  + "</State>" + $$NewLine
+    18 :     SET   : Result : ##Result + "    <OpeningBalance>" + $$String:##OpBal + "</OpeningBalance>" + $$NewLine
+    19 :     SET   : Result : ##Result + "  </Ledger>" + $$NewLine
+    20 : END WALK
+    21 : SET   : Result : ##Result + "</TallySync>"
+    22 : RETURN : ##Result
+
+;; ============================================================
+;; FUNCTION: Build Stock Item XML payload
+;; ============================================================
+[Function: BuildItemXML]
+    Variable : Result   : String : ""
+    Variable : ItName   : String
+    Variable : ItParent : String
+    Variable : ItUnit   : String
+    Variable : ItOpQty  : Quantity
+    Variable : ItOpRate : Rate
+    Variable : ItGST    : String
+
+    01 : SET   : Result : "<?xml version=" + $$StrByCharCode:34 + "1.0" + $$StrByCharCode:34 + "?>" + $$NewLine
+    02 : SET   : Result : ##Result + "<TallySync type=" + $$StrByCharCode:34 + "items" + $$StrByCharCode:34 + ">" + $$NewLine
+    03 : WALK COLLECTION : ItemsForSync
+    04 :     SET   : ItName   : $Name
+    05 :     SET   : ItParent : $Parent
+    06 :     SET   : ItUnit   : $BaseUnits
+    07 :     SET   : ItOpQty  : $OpeningBalance
+    08 :     SET   : ItOpRate : $OpeningRate
+    09 :     SET   : ItGST    : $GSTApplicable
+    10 :     SET   : Result : ##Result + "  <Item>" + $$NewLine
+    11 :     SET   : Result : ##Result + "    <Name>"   + $$XMLEncode:##ItName   + "</Name>" + $$NewLine
+    12 :     SET   : Result : ##Result + "    <Parent>" + $$XMLEncode:##ItParent + "</Parent>" + $$NewLine
+    13 :     SET   : Result : ##Result + "    <Unit>"   + $$XMLEncode:##ItUnit   + "</Unit>" + $$NewLine
+    14 :     SET   : Result : ##Result + "    <GSTApplicable>" + $$XMLEncode:##ItGST + "</GSTApplicable>" + $$NewLine
+    15 :     SET   : Result : ##Result + "    <OpeningQty>"  + $$String:##ItOpQty  + "</OpeningQty>" + $$NewLine
+    16 :     SET   : Result : ##Result + "    <OpeningRate>" + $$String:##ItOpRate + "</OpeningRate>" + $$NewLine
+    17 :     SET   : Result : ##Result + "  </Item>" + $$NewLine
+    18 : END WALK
+    19 : SET   : Result : ##Result + "</TallySync>"
+    20 : RETURN : ##Result
+
+;; ============================================================
+;; REPORT: Push Vouchers (Sales, Purchase, Receipt, Payment)
+;; ============================================================
+[Report: PragatiPushVouchers]
+    Form    : PragatiPushVouchers
+    Title   : "Pragati Sync — Pushing Vouchers"
+
+[Form: PragatiPushVouchers]
+    Parts   : PragatiPushVouchersPart
+    Buttons : PragatiPushVouchersBtn, PragatiCloseBtn
+    Background  : "Light Yellow"
+    Width   : 80% Screen
+    Height  : 40% Screen
+
+[Part: PragatiPushVouchersPart]
+    Lines   : PragatiPushVouchersHdr, PragatiVoucherDateFrom, PragatiVoucherDateTo, PragatiPushVouchersInst
+    Vertical : Yes
+
+[Line: PragatiPushVouchersHdr]
+    Fields  : Simple Field
+    Local   : Field : Simple Field : Set as : "Pragati Sync — Voucher Push"
+    Local   : Field : Simple Field : Style  : "Large Bold"
+    Local   : Field : Simple Field : Align  : Centre
+
+[Line: PragatiVoucherDateFrom]
+    Fields  : Medium Prompt, ShortDateField
+    Local   : Field : Medium Prompt   : Info    : "From Date :"
+    Local   : Field : ShortDateField  : Storage : PragatiFromDate
+
+[Line: PragatiVoucherDateTo]
+    Fields  : Medium Prompt, ShortDateField
+    Local   : Field : Medium Prompt   : Info    : "To Date   :"
+    Local   : Field : ShortDateField  : Storage : PragatiToDate
+
+[Line: PragatiPushVouchersInst]
+    Fields  : Simple Field
+    Local   : Field : Simple Field : Set as : "Press Alt+V to push all vouchers in date range. Esc to close."
+    Local   : Field : Simple Field : Align  : Centre
+
+[System: UDF]
+    PragatiFromDate : Date    : 9001
+    PragatiToDate   : Date    : 9002
+
+[Button: PragatiPushVouchersBtn]
+    Key     : Alt+V
+    Action  : Call : PragatiPushVouchersFn
+    Title   : "Push Vouchers"
+
+;; ============================================================
+;; FUNCTION: Push vouchers in date range
+;; ============================================================
+[Function: PragatiPushVouchersFn]
+    Variable : VchXML     : String
+    Variable : RespCode   : Number
+    Variable : RespBody   : String
+
+    01 : SET   : SVCurrentCompany : ##SVCurrentCompany
+    02 : SET   : SVFromDate : #PragatiFromDate
+    03 : SET   : SVToDate   : #PragatiToDate
+    04 : SET   : VchXML : $$CollectionFieldByKey:$$BuildVoucherXML:1:VouchersForSync
+    05 : HTTP POST : @@SyncEndpoint : "ASCII" : "" : VchXML : RespCode : RespBody : "Content-Type: application/xml" : "X-API-Key: " + @@SyncApiKey : "X-Sync-Type: vouchers"
+    06 : MSGBOX  : "Pragati Sync" : "Voucher push complete. HTTP " + $$String:##RespCode + " — " + ##RespBody
+
+;; ============================================================
+;; COLLECTION: Vouchers in date range
+;; ============================================================
+[Collection: VouchersForSync]
+    Type        : Voucher
+    Fetch       : Date, VoucherTypeName, VoucherNumber, PartyLedgerName, Narration, Reference, Amount, AllLedgerEntries, AllInventoryEntries
+    Filter      : VoucherFilter
+
+[System: Formula]
+    VoucherFilter : ($Date >= $$Date:#PragatiFromDate) AND ($Date <= $$Date:#PragatiToDate) AND (NOT $IsCancelled) AND (NOT $IsOptional)
+
+;; ============================================================
+;; FUNCTION: Build Voucher XML payload
+;; Includes header + ledger entries + inventory entries
+;; ============================================================
+[Function: BuildVoucherXML]
+    Variable : Result    : String : ""
+    Variable : VchDate   : Date
+    Variable : VchType   : String
+    Variable : VchNo     : String
+    Variable : VchParty  : String
+    Variable : VchAmt    : Amount
+    Variable : VchNarr   : String
+
+    01 : SET   : Result : "<?xml version=" + $$StrByCharCode:34 + "1.0" + $$StrByCharCode:34 + "?>" + $$NewLine
+    02 : SET   : Result : ##Result + "<TallySync type=" + $$StrByCharCode:34 + "vouchers" + $$StrByCharCode:34 + ">" + $$NewLine
+    03 : WALK COLLECTION : VouchersForSync
+    04 :     SET   : VchDate  : $Date
+    05 :     SET   : VchType  : $VoucherTypeName
+    06 :     SET   : VchNo    : $VoucherNumber
+    07 :     SET   : VchParty : $PartyLedgerName
+    08 :     SET   : VchAmt   : $Amount
+    09 :     SET   : VchNarr  : $Narration
+    10 :     SET   : Result : ##Result + "  <Voucher>" + $$NewLine
+    11 :     SET   : Result : ##Result + "    <Date>"   + $$String:##VchDate:"YYYY-MM-DD" + "</Date>" + $$NewLine
+    12 :     SET   : Result : ##Result + "    <Type>"   + $$XMLEncode:##VchType  + "</Type>" + $$NewLine
+    13 :     SET   : Result : ##Result + "    <Number>" + $$XMLEncode:##VchNo    + "</Number>" + $$NewLine
+    14 :     SET   : Result : ##Result + "    <Party>"  + $$XMLEncode:##VchParty + "</Party>" + $$NewLine
+    15 :     SET   : Result : ##Result + "    <Amount>" + $$String:##VchAmt + "</Amount>" + $$NewLine
+    16 :     SET   : Result : ##Result + "    <Narration>" + $$XMLEncode:##VchNarr + "</Narration>" + $$NewLine
+    17 :     SET   : Result : ##Result + "    <LedgerEntries>" + $$NewLine
+    18 :     WALK COLLECTION : AllLedgerEntries
+    19 :         SET : Result : ##Result + "      <Entry>" + $$NewLine
+    20 :         SET : Result : ##Result + "        <Ledger>"  + $$XMLEncode:$LedgerName + "</Ledger>" + $$NewLine
+    21 :         SET : Result : ##Result + "        <Amount>"  + $$String:$Amount + "</Amount>" + $$NewLine
+    22 :         SET : Result : ##Result + "        <IsDeemedPositive>" + $$String:$IsDeemedPositive + "</IsDeemedPositive>" + $$NewLine
+    23 :         SET : Result : ##Result + "      </Entry>" + $$NewLine
+    24 :     END WALK
+    25 :     SET   : Result : ##Result + "    </LedgerEntries>" + $$NewLine
+    26 :     SET   : Result : ##Result + "    <InventoryEntries>" + $$NewLine
+    27 :     WALK COLLECTION : AllInventoryEntries
+    28 :         SET : Result : ##Result + "      <Item>" + $$NewLine
+    29 :         SET : Result : ##Result + "        <Name>"     + $$XMLEncode:$StockItemName + "</Name>" + $$NewLine
+    30 :         SET : Result : ##Result + "        <Quantity>" + $$String:$ActualQty + "</Quantity>" + $$NewLine
+    31 :         SET : Result : ##Result + "        <Rate>"     + $$String:$Rate + "</Rate>" + $$NewLine
+    32 :         SET : Result : ##Result + "        <Amount>"   + $$String:$Amount + "</Amount>" + $$NewLine
+    33 :         SET : Result : ##Result + "      </Item>" + $$NewLine
+    34 :     END WALK
+    35 :     SET   : Result : ##Result + "    </InventoryEntries>" + $$NewLine
+    36 :     SET   : Result : ##Result + "  </Voucher>" + $$NewLine
+    37 : END WALK
+    38 : SET   : Result : ##Result + "</TallySync>"
+    39 : RETURN : ##Result
+
+;; ============================================================
+;; REPORT: Push All (masters + last 30 days vouchers)
+;; ============================================================
+[Report: PragatiPushAll]
+    Form    : PragatiPushAll
+
+[Form: PragatiPushAll]
+    Parts   : PragatiPushAllPart
+    Buttons : PragatiPushAllBtn, PragatiCloseBtn
+
+[Part: PragatiPushAllPart]
+    Lines   : PragatiPushAllHdr
+
+[Line: PragatiPushAllHdr]
+    Fields  : Simple Field
+    Local   : Field : Simple Field : Set as : "Press Alt+A to push everything (ledgers, items, last 30 days vouchers)."
+    Local   : Field : Simple Field : Align  : Centre
+
+[Button: PragatiPushAllBtn]
+    Key     : Alt+A
+    Action  : Call : PragatiPushAllFn
+    Title   : "Push All"
+
+[Function: PragatiPushAllFn]
+    01 : CALL : PragatiPushLedgersFn
+    02 : CALL : PragatiPushItemsFn
+    03 : SET  : PragatiFromDate : $$AddDays:##SVCurrentDate:-30
+    04 : SET  : PragatiToDate   : ##SVCurrentDate
+    05 : CALL : PragatiPushVouchersFn
+    06 : MSGBOX : "Pragati Sync" : "Full sync complete."
+
+;; END OF FILE
