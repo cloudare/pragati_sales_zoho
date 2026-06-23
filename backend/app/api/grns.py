@@ -192,19 +192,34 @@ def submit_grn(
                     "rate": ln.rate,
                 })
         if credit_lines:
-            credit_payload = {
-                "vendor_id": grn.vendor_zoho_id,
-                "vendor_credit_number": f"VC-{grn.grn_number}",
-                "date": datetime.utcnow().strftime("%Y-%m-%d"),
-                "line_items": credit_lines,
-                "notes": f"Shortage/damage against GRN {grn.grn_number}",
-            }
-            # NOTE: Zoho's vendor credit endpoint is /vendorcredits; adjust if needed
-            try:
-                vc_resp = zoho_client._request("POST", "/vendorcredits", json=credit_payload)
-                grn.zoho_credit_note_id = vc_resp.get("vendor_credit", {}).get("vendor_credit_id")
-            except Exception as e:
-                grn.zoho_error = f"Bill OK, Vendor Credit failed: {e}"
+            # PRD M10: vendor credit note posts to Zoho only if there is no active
+            # approval chain for it, OR if there is one and the GRN has been approved.
+            from .approvals import is_approved
+            from ..models import ApprovalChain
+            has_chain_for_cn = (db.query(ApprovalChain)
+                                .filter(ApprovalChain.entity_type == "credit_note",
+                                        ApprovalChain.is_active.is_(True))
+                                .first()) is not None
+            if has_chain_for_cn and not is_approved(db, "credit_note", f"grn-{grn.id}"):
+                # Block the post — credit note must go through approval first
+                grn.zoho_error = (
+                    "Vendor credit note not posted: pending multi-level approval. "
+                    "Submit via /api/approvals/submit with entity_type='credit_note' and "
+                    f"entity_id='grn-{grn.id}' to start the approval chain."
+                )
+            else:
+                credit_payload = {
+                    "vendor_id": grn.vendor_zoho_id,
+                    "vendor_credit_number": f"VC-{grn.grn_number}",
+                    "date": datetime.utcnow().strftime("%Y-%m-%d"),
+                    "line_items": credit_lines,
+                    "notes": f"Shortage/damage against GRN {grn.grn_number}",
+                }
+                try:
+                    vc_resp = zoho_client._request("POST", "/vendorcredits", json=credit_payload)
+                    grn.zoho_credit_note_id = vc_resp.get("vendor_credit", {}).get("vendor_credit_id")
+                except Exception as e:
+                    grn.zoho_error = f"Bill OK, Vendor Credit failed: {e}"
 
         grn.status = GRNStatus.pushed_to_zoho
         grn.submitted_at = datetime.utcnow()
@@ -267,3 +282,70 @@ def _serialize(grn: GRN) -> dict:
             for p in grn.photos
         ],
     }
+
+
+# ===== M10 enforcement helper: post deferred credit note after approval =====
+@router.post("/{grn_id}/post-credit-note", dependencies=[Depends(require_roles(UserRole.admin, UserRole.accounts))])
+def post_credit_note_after_approval(grn_id: int, db: Session = Depends(get_db),
+                                    user: User = Depends(get_current_user)):
+    """
+    Idempotently post a vendor credit note to Zoho for a GRN that had its credit note
+    deferred pending approval. Verifies approval first.
+    """
+    from .approvals import is_approved
+    grn = db.query(GRN).filter(GRN.id == grn_id).first()
+    if not grn:
+        raise HTTPException(status_code=404, detail="GRN not found")
+    if grn.zoho_credit_note_id:
+        return {"ok": True, "message": "Credit note already posted", "credit_note_id": grn.zoho_credit_note_id}
+    if not is_approved(db, "credit_note", f"grn-{grn.id}"):
+        raise HTTPException(status_code=403, detail="Credit note has not been approved through the workflow")
+
+    credit_lines = []
+    for ln in grn.lines:
+        sd = (ln.shortage_qty or 0) + (ln.damage_qty or 0)
+        if sd > 0:
+            credit_lines.append({"item_id": ln.item_zoho_id, "name": ln.item_name,
+                                 "quantity": sd, "rate": ln.rate})
+    if not credit_lines:
+        return {"ok": True, "message": "No shortage/damage lines — nothing to credit"}
+    try:
+        from ..integrations.zoho import zoho_client
+        vc = zoho_client._request("POST", "/vendorcredits", json={
+            "vendor_id": grn.vendor_zoho_id,
+            "vendor_credit_number": f"VC-{grn.grn_number}",
+            "date": datetime.utcnow().strftime("%Y-%m-%d"),
+            "line_items": credit_lines,
+            "notes": f"Approved CN against GRN {grn.grn_number}",
+        })
+        grn.zoho_credit_note_id = vc.get("vendor_credit", {}).get("vendor_credit_id")
+        grn.zoho_error = None
+        db.add(AuditLog(actor_id=user.id, action="grn.credit_note_posted",
+                        entity_type="grn", entity_id=str(grn.id),
+                        details={"credit_note_id": grn.zoho_credit_note_id}))
+        db.commit()
+        return {"ok": True, "credit_note_id": grn.zoho_credit_note_id}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Zoho posting failed: {e}")
+
+
+# ===== M8 cross-reference =====
+@router.get("/by-zoho-invoice/{zoho_invoice_id}")
+def grns_for_invoice(zoho_invoice_id: str, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Find GRNs whose vendor credit note or purchase bill is linked to a Zoho invoice.
+    Currently links via the dispatch_order chain (sales-side); also returns GRNs whose
+    purchase bill ID matches (vendor-side)."""
+    from ..models import DispatchOrder
+    rows = []
+    # Sales side: dispatch_orders with this invoice id
+    for d in db.query(DispatchOrder).all():
+        if d.zoho_invoice_ids and zoho_invoice_id in d.zoho_invoice_ids:
+            rows.append({"source": "dispatch", "id": d.id, "number": d.dispatch_number,
+                         "status": d.status.value, "party_name": d.party_name})
+    # Vendor side: GRN purchase bills matching
+    matching = db.query(GRN).filter(GRN.zoho_purchase_bill_id == zoho_invoice_id).all()
+    for g in matching:
+        rows.append({"source": "grn", "id": g.id, "number": g.grn_number,
+                     "status": g.status.value, "vendor_name": g.vendor_name})
+    return rows

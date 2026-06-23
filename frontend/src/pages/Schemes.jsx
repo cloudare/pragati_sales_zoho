@@ -1,59 +1,63 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, asError } from '../api/client';
-import { useAuth } from '../context/AuthContext';
+import { api } from '../api/client';
 
 export default function Schemes() {
-  const { showToast, user } = useAuth();
-  const [schemes, setSchemes] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [list, setList] = useState([]);
+  const [activeOnly, setActiveOnly] = useState(true);
 
-  const load = async () => {
-    setLoading(true);
-    try { const r = await api.get('/api/schemes'); setSchemes(r.data); }
-    catch (e) { showToast(asError(e), 'error'); }
-    finally { setLoading(false); }
-  };
-  useEffect(() => { load(); }, []);
-
-  const deactivate = async (id) => {
-    if (!confirm('Deactivate this scheme?')) return;
-    try { await api.delete(`/api/schemes/${id}`); showToast('Deactivated', 'success'); load(); }
-    catch (e) { showToast(asError(e), 'error'); }
-  };
-
-  const canEdit = ['admin','accounts','sales'].includes(user?.role);
+  useEffect(() => {
+    api.get('/api/schemes', { params: { active_only: activeOnly } }).then(r => setList(r.data));
+  }, [activeOnly]);
 
   return (
     <div>
-      <div className="card">
-        <div className="flex">
-          <h2 style={{ margin: 0 }}>Schemes</h2>
-          <div className="spacer" />
-          {canEdit && <Link to="/schemes/new" className="btn btn-primary btn-sm">+ New Scheme</Link>}
+      <div className="flex-between mb-md">
+        <div>
+          <h2 className="mt-0 mb-0">Schemes</h2>
+          <p className="text-muted text-small mb-0">PRD M3 · Dynamic scheme engine with margin guardrails</p>
         </div>
+        <Link to="/schemes/new" className="btn-primary">+ New Scheme</Link>
       </div>
 
       <div className="card">
-        {loading ? <div className="loading">Loading...</div> :
-         schemes.length === 0 ? <div className="empty">No schemes configured</div> :
-         <table className="table">
-           <thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Valid</th><th>Priority</th><th>Active</th><th></th></tr></thead>
-           <tbody>
-             {schemes.map(s => (
-               <tr key={s.id}>
-                 <td><b>{s.code}</b></td>
-                 <td>{s.name}</td>
-                 <td>{s.scheme_type}</td>
-                 <td className="small">{new Date(s.valid_from).toLocaleDateString()} → {new Date(s.valid_to).toLocaleDateString()}</td>
-                 <td>{s.priority}</td>
-                 <td>{s.is_active ? '✓' : '—'}</td>
-                 <td>{canEdit && s.is_active && <button className="btn btn-danger btn-sm" onClick={() => deactivate(s.id)}>Deactivate</button>}</td>
-               </tr>
-             ))}
-           </tbody>
-         </table>
-        }
+        <div className="card-header">
+          <label className="flex mb-0" style={{ cursor: 'pointer' }}>
+            <input type="checkbox" checked={activeOnly} onChange={e => setActiveOnly(e.target.checked)}
+                   style={{ width: 'auto' }} />
+            Active only
+          </label>
+          <span className="pill pill-neutral">{list.length}</span>
+        </div>
+        <div className="card-body tight">
+          <table className="data">
+            <thead><tr>
+              <th>Code</th><th>Name</th><th>Type</th><th>Valid From</th><th>Valid To</th>
+              <th className="text-right">Priority</th><th className="text-right">Min Margin</th><th>Status</th>
+            </tr></thead>
+            <tbody>
+              {list.map(s => (
+                <tr key={s.id}>
+                  <td className="text-mono">{s.code}</td>
+                  <td><strong>{s.name}</strong></td>
+                  <td><span className="pill pill-info">{s.scheme_type}</span></td>
+                  <td className="text-small">{s.valid_from ? new Date(s.valid_from).toLocaleDateString() : '—'}</td>
+                  <td className="text-small">{s.valid_to ? new Date(s.valid_to).toLocaleDateString() : '—'}</td>
+                  <td className="text-right">{s.priority}</td>
+                  <td className="text-right">{s.min_margin_pct != null ? `${s.min_margin_pct}%` : '—'}</td>
+                  <td><span className={`pill pill-${s.is_active ? 'success' : 'neutral'}`}>
+                    {s.is_active ? 'Active' : 'Inactive'}
+                  </span></td>
+                </tr>
+              ))}
+              {list.length === 0 && (
+                <tr><td colSpan={8} className="text-center text-muted" style={{ padding: 32 }}>
+                  No schemes match these filters.
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

@@ -1,119 +1,114 @@
-import { useEffect, useState } from 'react';
-import { api, asError } from '../api/client';
-import { useAuth } from '../context/AuthContext';
+import { useState, useEffect } from 'react';
+import { api, API_BASE } from '../api/client';
 
 export default function Reports() {
-  const { showToast } = useAuth();
-  const [tab, setTab] = useState('schemes');
   const [days, setDays] = useState(30);
-  const [scheme, setScheme] = useState([]);
-  const [audit, setAudit] = useState([]);
+  const [byBrand, setByBrand] = useState([]);
+  const [schemeUsage, setSchemeUsage] = useState([]);
+  const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [auditFilter, setAuditFilter] = useState({ entity_type: '', entity_id: '' });
 
-  useEffect(() => {
-    setLoading(true);
-    if (tab === 'schemes') {
-      api.get('/api/reports/scheme-usage', { params: { days } })
-        .then(r => setScheme(r.data))
-        .catch(e => showToast(asError(e), 'error'))
-        .finally(() => setLoading(false));
-    } else {
-      const params = {};
-      if (auditFilter.entity_type) params.entity_type = auditFilter.entity_type;
-      if (auditFilter.entity_id) params.entity_id = auditFilter.entity_id;
-      api.get('/api/reports/audit-log', { params })
-        .then(r => setAudit(r.data))
-        .catch(e => showToast(asError(e), 'error'))
-        .finally(() => setLoading(false));
-    }
-  }, [tab, days, auditFilter.entity_type, auditFilter.entity_id]);
+  const load = async () => {
+    setLoading(true); setError('');
+    try {
+      const [u, b] = await Promise.all([
+        api.get(`/api/reports/scheme-usage?days=${days}`).catch(() => ({ data: [] })),
+        api.get(`/api/reports/scheme-usage/by-brand?days=${days}`).catch(() => ({ data: [] })),
+      ]);
+      setSchemeUsage(u.data); setByBrand(b.data);
+    } catch (e) { setError(e.response?.data?.detail || String(e)); }
+    setLoading(false);
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [days]);
+
+  const exportExcel = async () => {
+    try {
+      const r = await api.get(`/api/reports/scheme-usage/export?days=${days}`,
+        { responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([r.data]));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `scheme_usage_${days}d.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { setError(e.response?.data?.detail || 'Export failed'); }
+  };
 
   return (
-    <div>
+    <>
+      {error && <div className="alert alert-error">{error}</div>}
+
       <div className="card">
-        <div className="flex">
-          <button className={`btn btn-sm ${tab === 'schemes' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('schemes')}>Scheme Usage</button>
-          <button className={`btn btn-sm ${tab === 'audit'   ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('audit')}>Audit Log</button>
+        <div className="card-header">
+          <h3>Scheme Reporting (M4)</h3>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <label className="text-small mb-0">Period:</label>
+            <select value={days} onChange={e => setDays(+e.target.value)} style={{ width: 120 }}>
+              <option value={7}>Last 7 days</option>
+              <option value={30}>Last 30 days</option>
+              <option value={90}>Last 90 days</option>
+              <option value={365}>Last year</option>
+            </select>
+            <button className="btn-primary btn-sm" onClick={exportExcel}>↓ Export Excel</button>
+          </div>
         </div>
       </div>
 
-      {tab === 'schemes' && (
-        <>
-          <div className="card">
-            <div className="form-group">
-              <label>Last N days</label>
-              <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
-                <option value={7}>7</option><option value={30}>30</option>
-                <option value={90}>90</option><option value={180}>180</option>
-              </select>
-            </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 16 }}>
+        <div className="card">
+          <div className="card-header"><h3>By Brand</h3></div>
+          <div className="card-body tight">
+            <table className="data">
+              <thead><tr>
+                <th>Brand</th>
+                <th className="text-right">Applications</th>
+                <th className="text-right">Discount ₹</th>
+              </tr></thead>
+              <tbody>
+                {byBrand.map((b, i) => (
+                  <tr key={i}>
+                    <td>{b.brand}</td>
+                    <td className="text-right">{b.applications}</td>
+                    <td className="text-right">{b.discount_amount.toLocaleString('en-IN', {maximumFractionDigits: 2})}</td>
+                  </tr>
+                ))}
+                {byBrand.length === 0 && (
+                  <tr><td colSpan={3} style={{ textAlign: 'center', color: '#9ca3af', padding: 24 }}>
+                    {loading ? 'Loading…' : 'No scheme applications in this period.'}
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
           </div>
-          <div className="card">
-            <h3>Scheme Usage (Last {days} days)</h3>
-            {loading ? <div className="loading">Loading...</div> :
-             scheme.length === 0 ? <div className="empty">No scheme applications yet</div> :
-             <table className="table">
-               <thead><tr><th>Code</th><th>Name</th><th className="num">Applications</th><th className="num">Billed Qty</th><th className="num">Free Qty</th><th className="num">Discount ₹</th></tr></thead>
-               <tbody>
-                 {scheme.map(s => (
-                   <tr key={s.code}>
-                     <td><b>{s.code}</b></td>
-                     <td>{s.name}</td>
-                     <td className="num">{s.applications}</td>
-                     <td className="num">{s.billed_qty}</td>
-                     <td className="num">{s.free_qty}</td>
-                     <td className="num">₹{s.discount_amount.toFixed(2)}</td>
-                   </tr>
-                 ))}
-               </tbody>
-             </table>
-            }
-          </div>
-        </>
-      )}
+        </div>
 
-      {tab === 'audit' && (
-        <>
-          <div className="card">
-            <div className="form-row">
-              <div className="form-group">
-                <label>Entity Type</label>
-                <select value={auditFilter.entity_type} onChange={(e) => setAuditFilter(f => ({ ...f, entity_type: e.target.value }))}>
-                  <option value="">All</option>
-                  <option value="gate_entry">Gate Entry</option>
-                  <option value="grn">GRN</option>
-                  <option value="scheme">Scheme</option>
-                  <option value="invoice">Invoice</option>
-                </select>
-              </div>
-              <div className="form-group">
-                <label>Entity ID</label>
-                <input value={auditFilter.entity_id} onChange={(e) => setAuditFilter(f => ({ ...f, entity_id: e.target.value }))} placeholder="optional" />
-              </div>
-            </div>
+        <div className="card">
+          <div className="card-header"><h3>Recent Applications</h3></div>
+          <div className="card-body tight">
+            <table className="data">
+              <thead><tr>
+                <th>When</th><th>Scheme</th><th>Party</th>
+                <th className="text-right">Discount ₹</th>
+              </tr></thead>
+              <tbody>
+                {schemeUsage.slice(0, 20).map((s, i) => (
+                  <tr key={s.id || i}>
+                    <td className="text-small">{s.applied_at?.slice(0, 16).replace('T', ' ')}</td>
+                    <td>{s.scheme_name || s.scheme_code}</td>
+                    <td>{s.party_name}</td>
+                    <td className="text-right">{(s.discount_amount || 0).toLocaleString('en-IN', {maximumFractionDigits: 2})}</td>
+                  </tr>
+                ))}
+                {schemeUsage.length === 0 && (
+                  <tr><td colSpan={4} style={{ textAlign: 'center', color: '#9ca3af', padding: 24 }}>
+                    {loading ? 'Loading…' : 'No data yet.'}
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
           </div>
-          <div className="card">
-            {loading ? <div className="loading">Loading...</div> :
-             audit.length === 0 ? <div className="empty">No audit entries</div> :
-             <table className="table">
-               <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Entity</th><th>Details</th></tr></thead>
-               <tbody>
-                 {audit.map(l => (
-                   <tr key={l.id}>
-                     <td className="small">{new Date(l.created_at).toLocaleString('en-IN')}</td>
-                     <td>#{l.actor_id}</td>
-                     <td><code>{l.action}</code></td>
-                     <td>{l.entity_type}/{l.entity_id}</td>
-                     <td className="small muted">{l.details ? JSON.stringify(l.details) : '—'}</td>
-                   </tr>
-                 ))}
-               </tbody>
-             </table>
-            }
-          </div>
-        </>
-      )}
-    </div>
+        </div>
+      </div>
+    </>
   );
 }

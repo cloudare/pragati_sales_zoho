@@ -1,65 +1,66 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, asError } from '../api/client';
-import { useAuth } from '../context/AuthContext';
+import { api } from '../api/client';
 
 export default function GateEntries() {
-  const { showToast } = useAuth();
-  const [entries, setEntries] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState([]);
+  const [err, setErr] = useState('');
   const [filter, setFilter] = useState('');
 
-  const load = async () => {
-    setLoading(true);
-    try {
-      const params = filter ? { status_filter: filter } : {};
-      const r = await api.get('/api/gate-entries', { params });
-      setEntries(r.data);
-    } catch (e) { showToast(asError(e), 'error'); }
-    finally { setLoading(false); }
-  };
-  useEffect(() => { load(); }, [filter]);
+  useEffect(() => {
+    api.get('/api/gate-entries').then(r => setRows(r.data))
+       .catch(e => setErr(e.response?.data?.detail || String(e)));
+  }, []);
+
+  const filtered = rows.filter(r =>
+    !filter || r.entry_number?.toLowerCase().includes(filter.toLowerCase()) ||
+    r.vendor_name?.toLowerCase().includes(filter.toLowerCase()) ||
+    r.vehicle_number?.toLowerCase().includes(filter.toLowerCase()));
 
   return (
-    <div>
-      <div className="card">
-        <div className="flex">
-          <h2 style={{ margin: 0 }}>Gate Entries</h2>
-          <div className="spacer" />
-          <Link to="/gate-entries/new" className="btn btn-primary btn-sm">+ New</Link>
-        </div>
-        <div className="form-group mt">
-          <label>Filter by status</label>
-          <select value={filter} onChange={(e) => setFilter(e.target.value)}>
-            <option value="">All</option>
-            <option value="created">Created</option>
-            <option value="unloaded">Unloaded</option>
-            <option value="grn_done">GRN Done</option>
-            <option value="closed">Closed</option>
-            <option value="rejected">Rejected</option>
-          </select>
-        </div>
-      </div>
+    <>
+      {err && <div className="alert alert-error">{err}</div>}
 
       <div className="card">
-        {loading ? <div className="loading">Loading...</div> :
-         entries.length === 0 ? <div className="empty">No gate entries found</div> :
-         <table className="table">
-           <thead><tr><th>Number</th><th>Vehicle</th><th>Vendor</th><th>Invoice</th><th>Status</th></tr></thead>
-           <tbody>
-             {entries.map(e => (
-               <tr key={e.id} onClick={() => window.location.href = `/gate-entries/${e.id}`} style={{ cursor: 'pointer' }}>
-                 <td>{e.entry_number}</td>
-                 <td>{e.vehicle_number}</td>
-                 <td>{e.vendor_name}</td>
-                 <td>{e.invoice_ref || '—'}</td>
-                 <td><span className={`pill pill-${e.status}`}>{e.status}</span></td>
-               </tr>
-             ))}
-           </tbody>
-         </table>
-        }
+        <div className="card-header">
+          <h3>Gate Entries</h3>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input placeholder="Search number, vendor, vehicle…"
+              value={filter} onChange={e => setFilter(e.target.value)} style={{ width: 250 }} />
+            <Link to="/gate-entries/new" className="btn-primary btn-sm">+ New Entry</Link>
+          </div>
+        </div>
+        <div className="card-body tight">
+          <table className="data">
+            <thead><tr>
+              <th>Entry #</th><th>Vendor</th><th>Vehicle</th><th>Created</th><th>Status</th>
+            </tr></thead>
+            <tbody>
+              {filtered.map(r => (
+                <tr key={r.id} className="clickable" onClick={() => window.location.assign(`/gate-entries/${r.id}`)}>
+                  <td><Link to={`/gate-entries/${r.id}`}>{r.entry_number}</Link></td>
+                  <td>{r.vendor_name}</td>
+                  <td className="text-mono">{r.vehicle_number}</td>
+                  <td className="text-small text-muted">
+                    {r.created_at && new Date(r.created_at).toLocaleString()}
+                  </td>
+                  <td>
+                    <span className={`pill ${
+                      r.status === 'closed' ? 'pill-success' :
+                      r.status === 'cancelled' ? 'pill-danger' : 'pill-warning'
+                    }`}>{r.status}</span>
+                  </td>
+                </tr>
+              ))}
+              {filtered.length === 0 && (
+                <tr><td colSpan={5} style={{ textAlign: 'center', color: '#9ca3af', padding: 24 }}>
+                  No gate entries. Click "+ New Entry" to create one.
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
-    </div>
+    </>
   );
 }

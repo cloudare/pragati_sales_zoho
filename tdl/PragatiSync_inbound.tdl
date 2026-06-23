@@ -1,0 +1,134 @@
+;; ============================================================
+;; PragatiSync_inbound.tdl
+;; Cloudare Technologies — Pragati Sales
+;;
+;; PRD M14 (Zoho → Tally direction): Tally receives vouchers/payments
+;; from the backend over HTTP. Backend converts Zoho records to Tally
+;; XML and POSTs them to Tally's HTTP gateway.
+;;
+;; This replaces the legacy outbound PragatiSync.tdl (which pushed
+;; FROM Tally TO backend). The legacy file is kept in /tdl/legacy/
+;; for read-only audit feeds only.
+;;
+;; ARCHITECTURE
+;; ------------
+;;   Zoho Books  ──webhook──►  Backend  ──HTTP XML──►  Tally Gateway
+;;                                                       (this TDL)
+;;
+;; SETUP IN TALLY
+;; --------------
+;; 1. Enable Tally Gateway in tally.ini:
+;;      TallyPort = 9000
+;;      AllowConnect = Yes
+;;   (This makes Tally listen on http://<machine>:9000 for XML imports.)
+;;
+;; 2. Load this TDL:
+;;      F1 (Help) > TDL & Add-On > F4 (Manage Local TDLs)
+;;      Add PragatiSync_inbound.tdl
+;;   (The TDL adds custom ledger/item creation logic and audit fields.)
+;;
+;; 3. In the backend .env, set:
+;;      TALLY_ENDPOINT=http://<tally-machine>:9000
+;;      TALLY_COMPANY_NAME=<Tally company name, e.g. "Pragati Sales">
+;;
+;; 4. The backend will POST Tally-native XML to that endpoint whenever
+;;    Zoho fires an invoice.created or payment.received webhook, and
+;;    on the 15-minute Celery sweep + 23:30 IST end-of-day cron.
+;;
+;; AUDIT
+;; -----
+;; Every received voucher gets a custom UDF (PragatiZohoRef) tagging
+;; it with the source Zoho entity ID for reconciliation.
+;; ============================================================
+
+
+[System: UDF]
+    PragatiZohoRef    : String    : 100
+    PragatiSyncedAt   : String    : 50
+
+
+;; ============================================================
+;; Optional: override voucher save to record the Zoho reference
+;; if it's present in the incoming XML (the backend includes a
+;; <PRAGATIZOHOREF> tag in the voucher payload).
+;; ============================================================
+[#Object: Voucher]
+    Set As : "BasicBuyerName" : $$AsString:#PRAGATIZOHOREF  : Skip : Not $$IsEmpty:#PRAGATIZOHOREF
+
+
+;; ============================================================
+;; Reconciliation report — surfaces all vouchers received from
+;; backend over the last N days, showing Zoho reference.
+;; Access: Gateway of Tally → Pragati Audit → Sync Recon.
+;; ============================================================
+[#Menu: Gateway of Tally]
+    Add : Item : "Pragati Audit"   : Menu : PragatiAuditMenu
+
+[Menu: PragatiAuditMenu]
+    Add : Item : "Sync Reconciliation (last 7 days)"  : Display : PragatiSyncReconReport
+
+[Report: PragatiSyncReconReport]
+    Form    : PragatiSyncReconReport
+    Title   : "Pragati Sync Reconciliation"
+    Set     : SVFromDate : ##LastDay7
+    Set     : SVToDate   : ##SVCurrentDate
+
+[Form: PragatiSyncReconReport]
+    Parts   : PragatiSyncReconReport
+
+[Part: PragatiSyncReconReport]
+    Lines   : PragatiSyncReconHdr, PragatiSyncReconLine
+    Repeat  : PragatiSyncReconLine : PragatiVouchersWithZohoRef
+    Scroll  : Vertical
+    CommonBorder : Yes
+
+[Line: PragatiSyncReconHdr]
+    Use     : PragatiSyncReconLine
+    Local   : Field : Default : Type : String
+    Local   : Field : Default : Style : Normal Bold
+    Local   : Field : VchDate : Set As : "Date"
+    Local   : Field : VchNo   : Set As : "Voucher No."
+    Local   : Field : VchType : Set As : "Voucher Type"
+    Local   : Field : VchAmt  : Set As : "Amount"
+    Local   : Field : VchZoho : Set As : "Zoho Ref"
+    Border  : Thin Top Bottom
+
+[Line: PragatiSyncReconLine]
+    Fields  : VchDate, VchNo, VchType, VchAmt, VchZoho
+
+[Field: VchDate]
+    Width   : 12
+    Set As  : $Date
+
+[Field: VchNo]
+    Width   : 20
+    Set As  : $VoucherNumber
+
+[Field: VchType]
+    Width   : 15
+    Set As  : $VoucherTypeName
+
+[Field: VchAmt]
+    Width   : 15 Right
+    Set As  : $$NumItems:LedgerEntries
+
+[Field: VchZoho]
+    Width   : 30
+    Set As  : $PragatiZohoRef
+
+[Collection: PragatiVouchersWithZohoRef]
+    Type    : Voucher
+    Fetch   : Date, VoucherNumber, VoucherTypeName, PragatiZohoRef
+    Filter  : HasZohoRef
+
+[System: Formulae]
+    HasZohoRef : Not $$IsEmpty:$PragatiZohoRef
+    LastDay7   : $$AddDays:##SVCurrentDate:-7
+
+
+;; ============================================================
+;; END OF FILE
+;; The actual voucher creation is done by sending standard Tally
+;; XML to the gateway (Tally handles it natively). This TDL only
+;; adds the Zoho-reference UDF + reconciliation report.
+;; ============================================================

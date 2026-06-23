@@ -21,6 +21,11 @@ from .api.invoices import router as invoices_router
 from .api.tally import router as tally_router
 from .api.zoho_proxy import router as zoho_router
 from .api.reports import router as reports_router
+from .api.voucher_series import router as voucher_router
+from .api.approvals import router as approvals_router
+from .api.dispatch import router as dispatch_router
+from .api.webhooks import router as webhooks_router
+from .api.sync import router as sync_router
 
 
 # slowapi limiter - key by client IP (respects X-Forwarded-For if behind nginx)
@@ -114,6 +119,11 @@ def create_app() -> FastAPI:
     app.include_router(tally_router)
     app.include_router(zoho_router)
     app.include_router(reports_router)
+    app.include_router(voucher_router)
+    app.include_router(approvals_router)
+    app.include_router(dispatch_router)
+    app.include_router(webhooks_router)
+    app.include_router(sync_router)
 
     return app
 

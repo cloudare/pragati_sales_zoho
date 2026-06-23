@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, asError } from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import Typeahead from '../components/Typeahead';
 
 export default function GRNNew() {
   const { showToast } = useAuth();
@@ -9,8 +10,7 @@ export default function GRNNew() {
   const [sp] = useSearchParams();
   const gateEntryId = sp.get('gate_entry_id');
 
-  const [vendorQ, setVendorQ] = useState('');
-  const [vendors, setVendors] = useState([]);
+  const [vendorName, setVendorName] = useState('');
   const [vendor, setVendor] = useState(null);
   const [invoiceRef, setInvoiceRef] = useState('');
   const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().slice(0, 10));
@@ -18,40 +18,28 @@ export default function GRNNew() {
 
   const [lines, setLines] = useState([]);
   const [itemQ, setItemQ] = useState('');
-  const [items, setItems] = useState([]);
   const [busy, setBusy] = useState(false);
 
-  // Preload gate entry context if present
   useEffect(() => {
     if (gateEntryId) {
       api.get(`/api/gate-entries/${gateEntryId}`).then(r => {
-        setVendorQ(r.data.vendor_name);
+        setVendorName(r.data.vendor_name);
+        if (r.data.vendor_zoho_id) {
+          setVendor({ zoho_contact_id: r.data.vendor_zoho_id, name: r.data.vendor_name });
+        }
         setInvoiceRef(r.data.invoice_ref || '');
       }).catch(() => {});
     }
   }, [gateEntryId]);
 
-  const searchVendor = async () => {
-    try {
-      const r = await api.get('/api/zoho/contacts', { params: { q: vendorQ } });
-      setVendors(r.data);
-    } catch (e) { showToast('Zoho lookup failed: ' + asError(e), 'error'); }
-  };
-
-  const searchItem = async () => {
-    try {
-      const r = await api.get('/api/zoho/items', { params: { q: itemQ } });
-      setItems(r.data);
-    } catch (e) { showToast('Zoho item lookup failed: ' + asError(e), 'error'); }
-  };
-
-  const addLine = (item) => {
+  const addLineFromItem = (item) => {
     setLines(l => [...l, {
-      item_zoho_id: item.id, item_name: item.name, unit: item.unit || 'pcs',
+      item_zoho_id: item.zoho_item_id, item_name: item.name, unit: item.unit || 'pcs',
       expected_qty: 0, received_qty: 0, shortage_qty: 0, damage_qty: 0,
-      rate: item.purchase_rate || item.rate || 0, mrp: 0, discount_pct: 0, notes: ''
+      rate: item.purchase_rate || item.rate || 0, mrp: item.mrp || 0,
+      discount_pct: 0, notes: ''
     }]);
-    setItems([]); setItemQ('');
+    setItemQ('');
   };
 
   const updLine = (i, k, v) => setLines(ls => ls.map((l, idx) => idx === i ? { ...l, [k]: v } : l));
@@ -64,8 +52,7 @@ export default function GRNNew() {
     try {
       const payload = {
         gate_entry_id: gateEntryId ? Number(gateEntryId) : null,
-        vendor_zoho_id: vendor.id,
-        vendor_name: vendor.name,
+        vendor_zoho_id: vendor.zoho_contact_id, vendor_name: vendor.name,
         invoice_ref: invoiceRef,
         invoice_date: invoiceDate ? `${invoiceDate}T00:00:00` : null,
         notes,
@@ -89,92 +76,109 @@ export default function GRNNew() {
 
   return (
     <div>
+      <div className="mb-md">
+        <h2 className="mt-0 mb-0">New GRN</h2>
+        <p className="text-muted text-small mb-0">PRD M7 · Goods receipt with shortage/damage capture</p>
+      </div>
+
       <div className="card">
-        <h2>New GRN</h2>
-
-        <div className="form-group">
-          <label>Vendor *</label>
-          <div className="flex">
-            <input value={vendorQ} onChange={(e) => setVendorQ(e.target.value)} placeholder="Search Zoho vendor..." />
-            <button className="btn btn-secondary btn-sm" onClick={searchVendor} type="button">Search</button>
-          </div>
-          {vendor && <div className="muted small mt">Selected: <b>{vendor.name}</b></div>}
-          {vendors.length > 0 && !vendor && (
-            <div className="mt" style={{ border: '1px solid var(--border)', borderRadius: 6, maxHeight: 180, overflow: 'auto' }}>
-              {vendors.map(v => (
-                <div key={v.id} onClick={() => { setVendor(v); setVendors([]); }}
-                     style={{ padding: 8, borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}>
-                  {v.name} <span className="muted small">{v.gst_no}</span>
-                </div>
-              ))}
+        <div className="card-header"><h3>Header</h3></div>
+        <div className="card-body">
+          <div className="form-row">
+            <div>
+              <label>Vendor <span className="text-muted">*</span></label>
+              <Typeahead
+                value={vendorName} onChange={setVendorName}
+                onSelect={r => setVendor(r)}
+                endpoint="/api/sync/zoho/contacts"
+                extraParams={{ contact_type: 'vendor' }}
+                placeholder="Type to search synced vendors..."
+                idField="zoho_contact_id"
+              />
+              {vendor && <div className="text-muted text-small mt-sm">
+                Selected: <strong>{vendor.name}</strong>
+              </div>}
             </div>
-          )}
-        </div>
-
-        <div className="form-row">
-          <div className="form-group">
-            <label>Invoice Ref</label>
-            <input value={invoiceRef} onChange={(e) => setInvoiceRef(e.target.value)} />
+            <div>
+              <label>Invoice Reference</label>
+              <input value={invoiceRef} onChange={(e) => setInvoiceRef(e.target.value)} />
+            </div>
+            <div>
+              <label>Invoice Date</label>
+              <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} />
+            </div>
           </div>
           <div className="form-group">
-            <label>Invoice Date</label>
-            <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} />
+            <label>Notes</label>
+            <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
-        </div>
-
-        <div className="form-group">
-          <label>Notes</label>
-          <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
         </div>
       </div>
 
       <div className="card">
-        <h3>Line Items</h3>
+        <div className="card-header"><h3>Line Items</h3></div>
+        <div className="card-body">
+          <label>Add Item</label>
+          <Typeahead
+            value={itemQ} onChange={setItemQ}
+            onSelect={addLineFromItem}
+            endpoint="/api/sync/zoho/items"
+            placeholder="Type to search synced items..."
+            idField="zoho_item_id"
+          />
 
-        <div className="form-group">
-          <label>Add Item (from Zoho)</label>
-          <div className="flex">
-            <input value={itemQ} onChange={(e) => setItemQ(e.target.value)} placeholder="Search item name..." />
-            <button className="btn btn-secondary btn-sm" onClick={searchItem} type="button">Search</button>
-          </div>
-          {items.length > 0 && (
-            <div className="mt" style={{ border: '1px solid var(--border)', borderRadius: 6, maxHeight: 200, overflow: 'auto' }}>
-              {items.map(it => (
-                <div key={it.id} onClick={() => addLine(it)}
-                     style={{ padding: 8, borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}>
-                  {it.name} <span className="muted small">₹{it.purchase_rate || it.rate} / {it.unit}</span>
-                </div>
-              ))}
-            </div>
+          {lines.length > 0 && (
+            <table className="data mt-md">
+              <thead><tr>
+                <th>Item</th>
+                <th className="text-right">Expected</th>
+                <th className="text-right">Received</th>
+                <th className="text-right">Short</th>
+                <th className="text-right">Damaged</th>
+                <th className="text-right">Rate</th>
+                <th></th>
+              </tr></thead>
+              <tbody>
+                {lines.map((l, i) => (
+                  <tr key={i}>
+                    <td>{l.item_name}<div className="text-muted text-small">{l.unit}</div></td>
+                    <td><input type="number" step="any" value={l.expected_qty}
+                               onChange={(e) => updLine(i, 'expected_qty', e.target.value)}
+                               style={{ width: 80, textAlign: 'right' }} /></td>
+                    <td><input type="number" step="any" value={l.received_qty}
+                               onChange={(e) => updLine(i, 'received_qty', e.target.value)}
+                               style={{ width: 80, textAlign: 'right' }} /></td>
+                    <td><input type="number" step="any" value={l.shortage_qty}
+                               onChange={(e) => updLine(i, 'shortage_qty', e.target.value)}
+                               style={{ width: 80, textAlign: 'right' }} /></td>
+                    <td><input type="number" step="any" value={l.damage_qty}
+                               onChange={(e) => updLine(i, 'damage_qty', e.target.value)}
+                               style={{ width: 80, textAlign: 'right' }} /></td>
+                    <td><input type="number" step="any" value={l.rate}
+                               onChange={(e) => updLine(i, 'rate', e.target.value)}
+                               style={{ width: 90, textAlign: 'right' }} /></td>
+                    <td><button type="button" className="btn-danger btn-sm"
+                                onClick={() => rmLine(i)}>×</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
+          {lines.length === 0 && <div className="text-muted text-center text-small" style={{ padding: 16 }}>
+            No items added yet. Search above to add.
+          </div>}
         </div>
-
-        {lines.length > 0 && (
-          <div className="mt" style={{ overflowX: 'auto' }}>
-            <div className="line-grid head">
-              <div>Item</div><div>Expected</div><div>Received</div><div>Short</div><div>Damage</div><div>Rate</div><div></div>
-            </div>
-            {lines.map((l, i) => (
-              <div className="line-grid" key={i}>
-                <div>{l.item_name}<div className="muted small">{l.unit}</div></div>
-                <input type="number" step="any" value={l.expected_qty} onChange={(e) => updLine(i, 'expected_qty', e.target.value)} />
-                <input type="number" step="any" value={l.received_qty} onChange={(e) => updLine(i, 'received_qty', e.target.value)} />
-                <input type="number" step="any" value={l.shortage_qty} onChange={(e) => updLine(i, 'shortage_qty', e.target.value)} />
-                <input type="number" step="any" value={l.damage_qty} onChange={(e) => updLine(i, 'damage_qty', e.target.value)} />
-                <input type="number" step="any" value={l.rate} onChange={(e) => updLine(i, 'rate', e.target.value)} />
-                <button className="btn btn-danger btn-sm" onClick={() => rmLine(i)} type="button">×</button>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
 
-      <button className="btn btn-primary btn-full" onClick={submit} disabled={busy}>
-        {busy ? 'Saving...' : 'Save GRN as Draft'}
-      </button>
-      <div className="muted small mt" style={{ textAlign: 'center' }}>
+      <div className="form-actions">
+        <button type="button" className="btn-secondary" onClick={() => nav('/grns')}>Cancel</button>
+        <button type="button" className="btn-primary" onClick={submit} disabled={busy}>
+          {busy ? 'Saving…' : 'Save GRN as Draft'}
+        </button>
+      </div>
+      <p className="text-muted text-small text-center mt-md" style={{ textAlign: 'center' }}>
         Photos can be added after saving. Submit to Zoho from the detail page.
-      </div>
+      </p>
     </div>
   );
 }

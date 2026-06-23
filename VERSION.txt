@@ -1,0 +1,22 @@
+Pragati Sales Custom App
+Version: 1.2.1
+Date: 18 June 2026
+
+Changes from v1.2.0:
+  - M10 enforcement wired: GRN credit notes deferred until approval chain completes
+  - New endpoint: POST /api/grns/{id}/post-credit-note (idempotent, requires approval)
+  - M8 cross-reference endpoint: GET /api/grns/by-zoho-invoice/{id}
+  - M4 Excel export: GET /api/reports/scheme-usage/export
+  - M4 by-brand rollup: GET /api/reports/scheme-usage/by-brand
+  - Vendor/Customer typeahead pickers using master cache
+  - Complete UI overhaul to Zoho-inspired theme:
+    * Dark sidebar with grouped navigation
+    * Cards with subtle shadows
+    * Status pills (success/warning/danger/info/primary)
+    * Consistent form styling with focus highlights
+    * Professional data tables
+    * 10-step dispatch progress visualization
+  - UAT scenario document with 35 scripted tests
+
+Backend: 38/38 tests passing
+Frontend: builds clean

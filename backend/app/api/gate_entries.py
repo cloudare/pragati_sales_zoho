@@ -44,8 +44,9 @@ class GateEntryOut(BaseModel):
 
 def _generate_entry_number(db: Session) -> str:
     today = datetime.utcnow()
-    yymm = today.strftime("%y%m")
-    prefix = f"GE/{yymm}/"
+    # PRD M1 format: GE/2026/00045 (full year, 5-digit zero-padded sequence)
+    year = today.strftime("%Y")
+    prefix = f"GE/{year}/"
     last = (
         db.query(GateEntry)
         .filter(GateEntry.entry_number.like(f"{prefix}%"))
@@ -59,7 +60,7 @@ def _generate_entry_number(db: Session) -> str:
             seq = 1
     else:
         seq = 1
-    return f"{prefix}{seq:04d}"
+    return f"{prefix}{seq:05d}"
 
 
 # ---------- Routes ----------
@@ -69,9 +70,16 @@ def create_entry(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles(UserRole.guard, UserRole.warehouse)),
 ):
+    # Validate vehicle number (Indian RTO format) - PRD M1 requirement
+    from ..core.vehicle import validate_vehicle_number, VehicleNumberError
+    try:
+        normalized_vehicle = validate_vehicle_number(payload.vehicle_number)
+    except VehicleNumberError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid vehicle number: {e}")
+
     entry = GateEntry(
         entry_number=_generate_entry_number(db),
-        vehicle_number=payload.vehicle_number,
+        vehicle_number=normalized_vehicle,
         driver_name=payload.driver_name,
         driver_phone=payload.driver_phone,
         vendor_name=payload.vendor_name,

@@ -64,6 +64,45 @@ class SchemeType(str, enum.Enum):
     bundle = "bundle"              # item A + item B combo
 
 
+# ---- PRD-aligned new enums ----
+class PicklistStatus(str, enum.Enum):
+    """Picklist 10-step state machine per PRD M6."""
+    so_confirmed = "so_confirmed"        # Step 1: Sales Order confirmed
+    picklist_generated = "picklist_generated"  # Step 2
+    amended = "amended"                  # Step 3: SO amendment created an amended picklist
+    picking = "picking"                  # Step 4: warehouse actively picking
+    picked = "picked"                    # Step 4 complete
+    invoiced = "invoiced"                # Step 5: invoice generated in Zoho
+    lr_created = "lr_created"            # Step 6: LR generated
+    loaded = "loaded"                    # Step 7: loading sheet generated
+    einvoice_done = "einvoice_done"      # Step 8: e-invoice + e-way generated
+    gate_out = "gate_out"                # Step 9: gate-out slip generated
+    closed = "closed"                    # Step 10: stock updated, picklist closed
+    cancelled = "cancelled"
+
+
+class VoucherDocType(str, enum.Enum):
+    sales = "sales"
+    purchase = "purchase"
+    sales_return = "sales_return"      # Credit Note
+    purchase_return = "purchase_return" # Debit Note
+    stock_transfer = "stock_transfer"
+
+
+class ApprovalLevelStatus(str, enum.Enum):
+    """For multi-level audit workflow (M10)."""
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+    skipped = "skipped"
+
+
+class ZohoSyncDirection(str, enum.Enum):
+    """Direction of Tally sync per PRD M14."""
+    zoho_to_tally = "zoho_to_tally"     # Phase 1 cutover: Zoho is source
+    tally_to_zoho = "tally_to_zoho"     # legacy: only for read-only audit feed
+
+
 # ---------------- USER ----------------
 class User(Base):
     __tablename__ = "users"
@@ -313,3 +352,245 @@ class TallySyncLog(Base):
     raw_payload_excerpt = Column(Text)               # first 2KB for debugging
     errors = Column(JSON, default=list)
     status = Column(String(16), default="received")  # received | partial | done | failed
+
+
+# ============================================================
+# PRD M9 — VOUCHER SERIES MANAGEMENT
+# Brand-wise number series per document type
+# e.g. "Sales / HUL / 2026" → invoices get prefix "HUL-INV-"
+# ============================================================
+class VoucherSeries(Base):
+    __tablename__ = "voucher_series"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(128), nullable=False)
+    doc_type = Column(SAEnum(VoucherDocType), nullable=False)
+    brand = Column(String(64), index=True)         # e.g. "HUL", "ITC", or NULL for "All brands"
+    prefix = Column(String(16), nullable=False)    # e.g. "HUL-INV"
+    suffix = Column(String(16), default="")         # optional, e.g. "/26-27"
+    padding = Column(Integer, default=5)            # zero-pad sequence to N digits
+    current_sequence = Column(Integer, default=0)  # last used number
+    reset_yearly = Column(Boolean, default=True)
+    last_reset_at = Column(DateTime(timezone=True), server_default=func.now())
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    notes = Column(Text)
+    __table_args__ = (UniqueConstraint("doc_type", "brand", name="uq_voucher_series_doctype_brand"),)
+
+
+# ============================================================
+# PRD M6 — PICKLIST & DISPATCH (10-step flow)
+# Replaces the simple Picklist model above. Old Picklist kept for back-compat.
+# ============================================================
+class DispatchOrder(Base):
+    """
+    Master record for the full picklist → gate-out journey.
+    One DispatchOrder corresponds to one Sales Order (or multi-SO bundle if a vehicle carries several).
+    """
+    __tablename__ = "dispatch_orders"
+    id = Column(Integer, primary_key=True)
+    dispatch_number = Column(String(32), unique=True, nullable=False, index=True)
+    status = Column(SAEnum(PicklistStatus), default=PicklistStatus.so_confirmed, nullable=False)
+
+    # SO refs (Zoho Books / Inventory)
+    so_zoho_ids = Column(JSON, default=list)        # list[str] - one or more Zoho sales-order IDs
+    party_zoho_id = Column(String(64), nullable=False)
+    party_name = Column(String(256))
+
+    # Picklist data
+    picklist_generated_at = Column(DateTime(timezone=True))
+    amended_at = Column(DateTime(timezone=True))    # if SO was amended after picklist
+    amendment_reason = Column(Text)
+
+    # Pick
+    picker_user_id = Column(Integer, ForeignKey("users.id"))
+    picked_at = Column(DateTime(timezone=True))
+
+    # Invoice
+    zoho_invoice_ids = Column(JSON, default=list)
+    invoiced_at = Column(DateTime(timezone=True))
+
+    # LR (Lorry Receipt)
+    lr_number = Column(String(32))
+    transporter_name = Column(String(128))
+    vehicle_number = Column(String(32))
+    driver_name = Column(String(128))
+    driver_phone = Column(String(20))
+    lr_created_at = Column(DateTime(timezone=True))
+
+    # Loading sheet
+    loading_sheet_number = Column(String(32))
+    loaded_at = Column(DateTime(timezone=True))
+
+    # E-Invoice / E-Way
+    irn = Column(String(64))                        # IRN from IRP
+    ack_no = Column(String(32))
+    eway_bill_number = Column(String(32))
+    eway_valid_upto = Column(DateTime)
+    einvoice_done_at = Column(DateTime(timezone=True))
+
+    # Gate out
+    gate_out_slip_number = Column(String(32))
+    gate_out_at = Column(DateTime(timezone=True))
+
+    # Closure
+    closed_at = Column(DateTime(timezone=True))
+    closure_notes = Column(Text)
+
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    picker = relationship("User", foreign_keys=[picker_user_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    lines = relationship("DispatchLine", back_populates="dispatch", cascade="all, delete-orphan")
+
+
+class DispatchLine(Base):
+    __tablename__ = "dispatch_lines"
+    id = Column(Integer, primary_key=True)
+    dispatch_id = Column(Integer, ForeignKey("dispatch_orders.id", ondelete="CASCADE"), nullable=False)
+    item_zoho_id = Column(String(64), nullable=False)
+    item_name = Column(String(256), nullable=False)
+    bin_location = Column(String(64))
+    so_qty = Column(Float, default=0)          # quantity on the SO
+    amended_qty = Column(Float)                 # if amended, the new quantity
+    picked_qty = Column(Float, default=0)
+    short_pick_qty = Column(Float, default=0)
+    rate = Column(Float, default=0)
+    notes = Column(String(256))
+
+    dispatch = relationship("DispatchOrder", back_populates="lines")
+
+
+# ============================================================
+# PRD M10 — MULTI-LEVEL AUDIT & APPROVAL WORKFLOW
+# Defines a chain of approval levels for a document type (e.g. credit notes).
+# An ApprovalRequest is the running state of one document.
+# ============================================================
+class ApprovalChain(Base):
+    """A named chain of approval steps, e.g. 'Credit Note - 2 levels'."""
+    __tablename__ = "approval_chains"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(128), unique=True, nullable=False)
+    entity_type = Column(String(32), nullable=False)  # e.g. "credit_note", "grn", "scheme"
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    levels = relationship("ApprovalChainLevel", back_populates="chain",
+                          cascade="all, delete-orphan", order_by="ApprovalChainLevel.level")
+
+
+class ApprovalChainLevel(Base):
+    __tablename__ = "approval_chain_levels"
+    id = Column(Integer, primary_key=True)
+    chain_id = Column(Integer, ForeignKey("approval_chains.id", ondelete="CASCADE"), nullable=False)
+    level = Column(Integer, nullable=False)         # 1, 2, 3, ...
+    role = Column(SAEnum(UserRole), nullable=False)  # role authorised to approve at this level
+    name = Column(String(64))                        # human-readable, e.g. "Accounts Manager"
+    __table_args__ = (UniqueConstraint("chain_id", "level", name="uq_chain_level"),)
+    chain = relationship("ApprovalChain", back_populates="levels")
+
+
+class ApprovalRequest(Base):
+    """
+    A running approval workflow for one document.
+    Becomes 'approved' (all levels passed) or 'rejected' (any level rejects).
+    """
+    __tablename__ = "approval_requests"
+    id = Column(Integer, primary_key=True)
+    chain_id = Column(Integer, ForeignKey("approval_chains.id"), nullable=False)
+    entity_type = Column(String(32), nullable=False)
+    entity_id = Column(String(64), nullable=False)   # local DB id OR Zoho id, encoded as string
+    entity_label = Column(String(256))                # human-readable label for inbox
+    current_level = Column(Integer, default=1, nullable=False)
+    status = Column(SAEnum(ApprovalStatus), default=ApprovalStatus.pending, nullable=False)
+    submitted_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    submitted_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True))
+    payload = Column(JSON)                           # snapshot of the document being approved
+
+    chain = relationship("ApprovalChain")
+    submitted_by = relationship("User")
+    decisions = relationship("ApprovalDecision", back_populates="request",
+                             cascade="all, delete-orphan", order_by="ApprovalDecision.decided_at")
+    __table_args__ = (Index("ix_appreq_entity", "entity_type", "entity_id"),)
+
+
+class ApprovalDecision(Base):
+    """A single approver action — approve or reject — at a level."""
+    __tablename__ = "approval_decisions"
+    id = Column(Integer, primary_key=True)
+    request_id = Column(Integer, ForeignKey("approval_requests.id", ondelete="CASCADE"), nullable=False)
+    level = Column(Integer, nullable=False)
+    decider_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    decision = Column(SAEnum(ApprovalLevelStatus), nullable=False)
+    remarks = Column(Text)
+    decided_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    request = relationship("ApprovalRequest", back_populates="decisions")
+    decider = relationship("User")
+
+
+# ============================================================
+# ZOHO MASTER CACHE — items, contacts, vendors synced FROM Zoho
+# PRD section 3.3: "Master sync: Items, customers (parties), vendors are
+# maintained in Zoho and synced to the custom app"
+# ============================================================
+class ZohoItemCache(Base):
+    __tablename__ = "zoho_item_cache"
+    id = Column(Integer, primary_key=True)
+    zoho_item_id = Column(String(64), unique=True, nullable=False, index=True)
+    name = Column(String(256), nullable=False, index=True)
+    sku = Column(String(64), index=True)
+    unit = Column(String(16))
+    rate = Column(Float, default=0)
+    purchase_rate = Column(Float, default=0)
+    mrp = Column(Float, default=0)
+    brand = Column(String(64), index=True)
+    stock_on_hand = Column(Float, default=0)
+    is_active = Column(Boolean, default=True)
+    last_synced_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ZohoContactCache(Base):
+    __tablename__ = "zoho_contact_cache"
+    id = Column(Integer, primary_key=True)
+    zoho_contact_id = Column(String(64), unique=True, nullable=False, index=True)
+    name = Column(String(256), nullable=False, index=True)
+    contact_type = Column(String(16), index=True)  # customer | vendor
+    party_group = Column(String(64), index=True)    # for scheme targeting
+    gst_no = Column(String(32))
+    phone = Column(String(20))
+    email = Column(String(128))
+    is_active = Column(Boolean, default=True)
+    last_synced_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ============================================================
+# ZOHO WEBHOOK EVENTS — receive payment/invoice events from Zoho
+# ============================================================
+class ZohoWebhookEvent(Base):
+    __tablename__ = "zoho_webhook_events"
+    id = Column(Integer, primary_key=True)
+    event_type = Column(String(64), nullable=False, index=True)  # invoice.created, payment.received, etc
+    entity_id = Column(String(64), index=True)                    # Zoho's id of the affected entity
+    raw_payload = Column(JSON, nullable=False)
+    received_at = Column(DateTime(timezone=True), server_default=func.now())
+    processed_at = Column(DateTime(timezone=True))
+    processing_error = Column(Text)
+
+
+# ============================================================
+# OUTBOUND TALLY SYNC QUEUE (PRD M14: Zoho → Tally direction)
+# Each row is one item to push to Tally. End-of-day worker drains the queue.
+# ============================================================
+class TallyOutboundQueue(Base):
+    __tablename__ = "tally_outbound_queue"
+    id = Column(Integer, primary_key=True)
+    payload_type = Column(String(32), nullable=False, index=True)  # invoice | payment | bill | credit_note | ledger
+    zoho_entity_id = Column(String(64), nullable=False, index=True)
+    payload = Column(JSON, nullable=False)
+    status = Column(String(16), default="pending", index=True)     # pending | sent | failed | skipped
+    attempts = Column(Integer, default=0)
+    last_attempt_at = Column(DateTime(timezone=True))
+    last_error = Column(Text)
+    sent_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

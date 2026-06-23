@@ -41,38 +41,40 @@ export default function ChangePassword() {
   return (
     <div style={{ maxWidth: 480, margin: '0 auto' }}>
       <div className="card">
-        <h2>{forced ? 'Set Your Password' : 'Change Password'}</h2>
-        {forced && (
-          <div className="muted mt small">
-            For security, please set a new password before continuing.
-          </div>
-        )}
-        <form onSubmit={submit}>
-          <div className="form-group mt">
-            <label>Current Password</label>
-            <input type="password" required value={oldPw}
-                   onChange={(e) => setOldPw(e.target.value)}
-                   autoComplete="current-password" autoFocus />
-          </div>
-          <div className="form-group">
-            <label>New Password</label>
-            <input type="password" required value={newPw}
-                   onChange={(e) => setNewPw(e.target.value)}
-                   autoComplete="new-password" />
-            <div className="muted small mt">
-              At least 10 characters, with uppercase, lowercase, digit, and symbol.
+        <div className="card-header"><h3>{forced ? 'Set Your Password' : 'Change Password'}</h3></div>
+        <div className="card-body">
+          {forced && (
+            <div className="alert alert-warning">
+              For security, please set a new password before continuing.
             </div>
-          </div>
-          <div className="form-group">
-            <label>Confirm New Password</label>
-            <input type="password" required value={confirmPw}
-                   onChange={(e) => setConfirmPw(e.target.value)}
-                   autoComplete="new-password" />
-          </div>
-          <button className="btn btn-primary btn-full" disabled={loading}>
-            {loading ? 'Updating...' : 'Update Password'}
-          </button>
-        </form>
+          )}
+          <form onSubmit={submit}>
+            <div className="form-group">
+              <label>Current Password</label>
+              <input type="password" required value={oldPw}
+                     onChange={(e) => setOldPw(e.target.value)}
+                     autoComplete="current-password" autoFocus />
+            </div>
+            <div className="form-group">
+              <label>New Password</label>
+              <input type="password" required value={newPw}
+                     onChange={(e) => setNewPw(e.target.value)}
+                     autoComplete="new-password" />
+              <div className="text-muted text-small mt-sm">
+                At least 10 characters, with uppercase, lowercase, digit, and symbol.
+              </div>
+            </div>
+            <div className="form-group">
+              <label>Confirm New Password</label>
+              <input type="password" required value={confirmPw}
+                     onChange={(e) => setConfirmPw(e.target.value)}
+                     autoComplete="new-password" />
+            </div>
+            <button className="btn-primary" style={{ width: '100%' }} disabled={loading}>
+              {loading ? 'Updating…' : 'Update Password'}
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   );

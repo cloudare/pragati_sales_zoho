@@ -1,69 +1,65 @@
-import { useEffect, useState } from 'react';
-import { api, asError } from '../api/client';
-import { useAuth } from '../context/AuthContext';
+import { useState, useEffect } from 'react';
+import { api } from '../api/client';
 
 export default function TallySync() {
-  const { showToast } = useAuth();
-  const [logs, setLogs] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [recent, setRecent] = useState([]);
+  const [error, setError] = useState('');
 
-  const load = async () => {
-    setLoading(true);
-    try { const r = await api.get('/api/tally/sync-log'); setLogs(r.data); }
-    catch (e) { showToast(asError(e), 'error'); }
-    finally { setLoading(false); }
-  };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    api.get('/api/sync/tally/queue?limit=50')
+      .then(r => setRecent(r.data))
+      .catch(e => setError(e.response?.data?.detail || String(e)));
+  }, []);
 
   return (
     <div>
-      <div className="card">
-        <div className="flex">
-          <h2 style={{ margin: 0 }}>Tally Sync Log</h2>
-          <div className="spacer" />
-          <button className="btn btn-secondary btn-sm" onClick={load}>Refresh</button>
-        </div>
-        <div className="muted small mt">
-          Tally pushes data to this server via the TDL Add-on. Endpoint: <code>/api/tally/sync</code>
+      <div className="mb-md">
+        <h2 className="mt-0 mb-0">Tally Sync</h2>
+        <p className="text-muted text-small mb-0">PRD M14 · Zoho → Tally outbound queue</p>
+      </div>
+
+      {error && <div className="alert alert-error">{error}</div>}
+
+      <div className="alert alert-info">
+        <div>
+          <strong>Direction:</strong> Zoho is the system of record. Invoices and payments
+          created in Zoho are pushed to Tally via the queue below. The legacy outbound
+          (Tally → Backend) TDL is archived in <code>tdl/legacy/</code>.
         </div>
       </div>
 
       <div className="card">
-        {loading ? <div className="loading">Loading...</div> :
-         logs.length === 0 ? <div className="empty">No sync activity yet.<br /><span className="small">Trigger a sync from Tally (Gateway → Pragati Sync menu)</span></div> :
-         <table className="table">
-           <thead><tr><th>Received</th><th>Type</th><th className="num">Records</th><th className="num">Pushed</th><th className="num">Failed</th><th>Status</th></tr></thead>
-           <tbody>
-             {logs.map(l => (
-               <tr key={l.id}>
-                 <td className="small">{new Date(l.received_at).toLocaleString('en-IN')}</td>
-                 <td>{l.sync_type}</td>
-                 <td className="num">{l.record_count}</td>
-                 <td className="num" style={{ color: 'var(--success)' }}>{l.pushed_to_zoho}</td>
-                 <td className="num" style={{ color: l.failed_count > 0 ? 'var(--danger)' : 'var(--muted)' }}>{l.failed_count}</td>
-                 <td><span className={`pill pill-${l.status === 'done' ? 'pushed_to_zoho' : l.status === 'failed' ? 'failed' : 'submitted'}`}>{l.status}</span></td>
-               </tr>
-             ))}
-           </tbody>
-         </table>
-        }
-      </div>
-
-      {logs.some(l => l.errors && l.errors.length > 0) && (
-        <div className="card">
-          <h3>Recent Errors</h3>
-          {logs.filter(l => l.errors && l.errors.length).slice(0, 5).map(l => (
-            <div key={l.id} className="mb">
-              <div className="muted small">{new Date(l.received_at).toLocaleString('en-IN')} — {l.sync_type}</div>
-              <ul style={{ marginLeft: 18 }}>
-                {(l.errors || []).slice(0, 5).map((e, i) => (
-                  <li key={i} className="small">{e.name || e.voucher || 'fatal'}: {e.error || e.fatal}</li>
-                ))}
-              </ul>
-            </div>
-          ))}
+        <div className="card-header">
+          <h3>Recent queue items</h3>
+          <span className="pill pill-neutral">{recent.length}</span>
         </div>
-      )}
+        <div className="card-body tight">
+          <table className="data">
+            <thead><tr>
+              <th>#</th><th>Type</th><th>Zoho ID</th><th>Status</th>
+              <th className="text-right">Attempts</th><th>Last Error</th>
+            </tr></thead>
+            <tbody>
+              {recent.map(q => (
+                <tr key={q.id}>
+                  <td>{q.id}</td>
+                  <td><span className="pill pill-neutral">{q.payload_type}</span></td>
+                  <td className="text-mono">{q.zoho_entity_id}</td>
+                  <td><span className={`pill pill-${q.status === 'sent' ? 'success' :
+                       q.status === 'failed' ? 'danger' : 'warning'}`}>{q.status}</span></td>
+                  <td className="text-right">{q.attempts}</td>
+                  <td className="text-small">{q.last_error?.slice(0, 80)}</td>
+                </tr>
+              ))}
+              {recent.length === 0 && (
+                <tr><td colSpan={6} className="text-center text-muted" style={{ padding: 32 }}>
+                  Queue is empty. The Master Sync page lets you trigger a drain.
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }

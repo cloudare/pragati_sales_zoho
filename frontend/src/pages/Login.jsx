@@ -1,101 +1,68 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 export default function Login() {
-  const { login, user, pending2FA, verify2FA, cancel2FA } = useAuth();
-  const navigate = useNavigate();
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [twoFACode, setTwoFACode] = useState('');
+  const { user, login } = useAuth();
+  const nav = useNavigate();
+  const [username, setU] = useState('');
+  const [password, setP] = useState('');
+  const [twoFactor, setTF] = useState('');
+  const [needsTF, setNeedsTF] = useState(false);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  if (user) { navigate('/', { replace: true }); return null; }
+  if (user) return <Navigate to="/" replace />;
 
   const submit = async (e) => {
     e.preventDefault();
-    setLoading(true);
-    const r = await login(username, password);
-    setLoading(false);
-    if (r.ok) {
-      if (r.mustChangePassword) navigate('/change-password', { replace: true });
-      else if (r.requires2FASetup) navigate('/two-factor-setup', { replace: true });
-      else navigate('/', { replace: true });
-    }
-    // if requires2FA, pending2FA is now set and the 2FA panel below shows
-  };
-
-  const submit2FA = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    const r = await verify2FA(twoFACode);
-    setLoading(false);
-    if (r.ok) {
-      if (r.mustChangePassword) navigate('/change-password', { replace: true });
-      else navigate('/', { replace: true });
+    setError(''); setBusy(true);
+    try {
+      const r = await login(username, password, twoFactor || undefined);
+      if (r?.requires_two_factor) { setNeedsTF(true); setBusy(false); return; }
+      nav('/');
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Login failed');
+      setBusy(false);
     }
   };
 
-  // 2FA interstitial
-  if (pending2FA) {
-    return (
-      <div className="login-page">
-        <div className="login-box">
-          <h1>Two-Factor Verification</h1>
-          <div className="sub">
-            Enter the 6-digit code from your authenticator app
-            <br /><span className="muted small">for {pending2FA.username}</span>
-          </div>
-          <form onSubmit={submit2FA}>
-            <div className="form-group">
-              <label>6-digit code</label>
-              <input
-                value={twoFACode}
-                onChange={(e) => setTwoFACode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                autoFocus required inputMode="numeric"
-                placeholder="123456" autoComplete="one-time-code"
-              />
-            </div>
-            <button className="btn btn-primary btn-full" disabled={loading || twoFACode.length !== 6}>
-              {loading ? 'Verifying...' : 'Verify'}
-            </button>
-            <button type="button" className="btn btn-secondary btn-full mt" onClick={cancel2FA}>
-              Cancel
-            </button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  // Plain login
   return (
-    <div className="login-page">
-      <div className="login-box">
-        <h1>Pragati Sales</h1>
-        <div className="sub">Distributor Operations</div>
+    <div className="login-shell">
+      <div className="login-card">
+        <div className="brand">
+          <div className="logo">PS</div>
+          <h1>Pragati Sales</h1>
+          <p>ERP Workspace · Sign in to continue</p>
+        </div>
+
+        {error && <div className="alert alert-error">{error}</div>}
+
         <form onSubmit={submit}>
           <div className="form-group">
             <label>Username</label>
-            <input
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoFocus required autoComplete="username"
-            />
+            <input autoFocus value={username} onChange={e => setU(e.target.value)} required />
           </div>
           <div className="form-group">
             <label>Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required autoComplete="current-password"
-            />
+            <input type="password" value={password} onChange={e => setP(e.target.value)} required />
           </div>
-          <button className="btn btn-primary btn-full" disabled={loading}>
-            {loading ? 'Signing in...' : 'Sign In'}
+          {needsTF && (
+            <div className="form-group">
+              <label>Two-Factor Code <span className="hint">(6 digits from your authenticator)</span></label>
+              <input value={twoFactor} onChange={e => setTF(e.target.value)} maxLength={6} required />
+            </div>
+          )}
+          <button type="submit" className="btn-primary" style={{ width: '100%', marginTop: 8 }}
+                  disabled={busy}>
+            {busy ? 'Signing in…' : 'Sign In'}
           </button>
         </form>
+
+        <div className="divider" />
+        <p className="text-small text-muted text-center" style={{ textAlign: 'center', margin: 0 }}>
+          Cloudare Technologies · Pragati Sales Pvt Ltd
+        </p>
       </div>
     </div>
   );

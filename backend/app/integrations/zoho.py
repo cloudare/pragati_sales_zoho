@@ -66,8 +66,8 @@ class ZohoBooksClient:
             return resp.json()
 
     # ---------- CONTACTS ----------
-    def list_contacts(self, contact_name: str | None = None, page: int = 1) -> dict:
-        params = {"page": page, "per_page": 200}
+    def list_contacts(self, contact_name: str | None = None, page: int = 1, per_page: int = 200) -> dict:
+        params = {"page": page, "per_page": per_page}
         if contact_name:
             params["contact_name_contains"] = contact_name
         return self._request("GET", "/contacts", params=params)
@@ -97,8 +97,8 @@ class ZohoBooksClient:
         return result.get("contact", {})
 
     # ---------- ITEMS ----------
-    def list_items(self, name: str | None = None, page: int = 1) -> dict:
-        params = {"page": page, "per_page": 200}
+    def list_items(self, name: str | None = None, page: int = 1, per_page: int = 200) -> dict:
+        params = {"page": page, "per_page": per_page}
         if name:
             params["name_contains"] = name
         return self._request("GET", "/items", params=params)
@@ -144,3 +144,7 @@ class ZohoBooksClient:
 
 # Singleton
 zoho_client = ZohoBooksClient()
+
+
+def get_zoho_client() -> ZohoBooksClient:
+    return zoho_client

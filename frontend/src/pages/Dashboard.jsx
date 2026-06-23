@@ -5,101 +5,107 @@ import { useAuth } from '../context/AuthContext';
 
 export default function Dashboard() {
   const { user } = useAuth();
-  const [stats, setStats] = useState({ gateCreated: 0, gateUnloaded: 0, grnsDraft: 0, grnsPushed: 0, schemes: 0 });
-  const [recent, setRecent] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState({});
+  const [recent, setRecent] = useState({ gate: [], grns: [], dispatch: [] });
+  const [err, setErr] = useState('');
 
   useEffect(() => {
     (async () => {
       try {
-        const [ge, gu, gd, gp, schemes] = await Promise.all([
-          api.get('/api/gate-entries', { params: { status_filter: 'created' } }),
-          api.get('/api/gate-entries', { params: { status_filter: 'unloaded' } }),
-          api.get('/api/grns', { params: { status_filter: 'draft' } }),
-          api.get('/api/grns', { params: { status_filter: 'pushed_to_zoho' } }),
-          api.get('/api/schemes', { params: { active_only: true } }).catch(() => ({ data: [] })),
+        const [g, n, d] = await Promise.all([
+          api.get('/api/gate-entries?limit=5').catch(() => ({ data: [] })),
+          api.get('/api/grns?limit=5').catch(() => ({ data: [] })),
+          api.get('/api/dispatch?limit=5').catch(() => ({ data: [] })),
         ]);
+        setRecent({ gate: g.data, grns: n.data, dispatch: d.data });
         setStats({
-          gateCreated: ge.data.length,
-          gateUnloaded: gu.data.length,
-          grnsDraft: gd.data.length,
-          grnsPushed: gp.data.length,
-          schemes: schemes.data.length,
+          gateOpen:    g.data.filter(x => x.status === 'created' || x.status === 'in_progress').length,
+          grnOpen:     n.data.filter(x => x.status === 'draft' || x.status === 'submitted').length,
+          dispatchActive: d.data.filter(x => x.status !== 'closed' && x.status !== 'cancelled').length,
         });
-        setRecent(ge.data.slice(0, 5));
-      } catch {} finally { setLoading(false); }
+      } catch (e) { setErr(e.response?.data?.detail || String(e)); }
     })();
   }, []);
 
-  const isGuard = user?.role === 'guard';
-
   return (
-    <div>
-      <div className="card">
-        <h2>Welcome, {user?.full_name}</h2>
-        <div className="muted">{new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</div>
+    <>
+      <h2 className="mt-0 mb-md">Welcome back, {user?.full_name?.split(' ')[0]}</h2>
+      {err && <div className="alert alert-error">{err}</div>}
+
+      <div className="stat-grid mb-md">
+        <div className="stat-card">
+          <div className="label">Gate Entries (open)</div>
+          <div className="value">{stats.gateOpen ?? '—'}</div>
+        </div>
+        <div className="stat-card">
+          <div className="label">GRNs in progress</div>
+          <div className="value">{stats.grnOpen ?? '—'}</div>
+        </div>
+        <div className="stat-card">
+          <div className="label">Active dispatches</div>
+          <div className="value">{stats.dispatchActive ?? '—'}</div>
+        </div>
+        <div className="stat-card">
+          <div className="label">Your role</div>
+          <div className="value" style={{ fontSize: 18, textTransform: 'capitalize' }}>{user?.role}</div>
+        </div>
       </div>
 
-      {isGuard ? (
-        <div className="card">
-          <h3>Quick Actions</h3>
-          <Link to="/gate-entries/new" className="btn btn-primary btn-full mt">
-            + New Gate Entry
-          </Link>
-          <Link to="/gate-entries" className="btn btn-secondary btn-full mt">
-            View Gate Entries
-          </Link>
-        </div>
-      ) : (
-        <>
-          {loading ? <div className="loading">Loading...</div> : (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+        <RecentCard title="Recent Gate Entries" linkTo="/gate-entries" rows={recent.gate}
+          render={(r) => (
             <>
-              <div className="form-row">
-                <div className="card">
-                  <div className="muted small">GATE ENTRIES — OPEN</div>
-                  <div style={{ fontSize: 28, fontWeight: 600, color: 'var(--primary)' }}>{stats.gateCreated}</div>
-                  <Link to="/gate-entries" className="small">view all →</Link>
-                </div>
-                <div className="card">
-                  <div className="muted small">GRN — DRAFT</div>
-                  <div style={{ fontSize: 28, fontWeight: 600, color: 'var(--warning)' }}>{stats.grnsDraft}</div>
-                  <Link to="/grns" className="small">view all →</Link>
-                </div>
-              </div>
-              <div className="form-row">
-                <div className="card">
-                  <div className="muted small">GRN — PUSHED TO ZOHO</div>
-                  <div style={{ fontSize: 28, fontWeight: 600, color: 'var(--success)' }}>{stats.grnsPushed}</div>
-                </div>
-                <div className="card">
-                  <div className="muted small">ACTIVE SCHEMES</div>
-                  <div style={{ fontSize: 28, fontWeight: 600, color: 'var(--primary)' }}>{stats.schemes}</div>
-                  <Link to="/schemes" className="small">view all →</Link>
-                </div>
-              </div>
+              <td><Link to={`/gate-entries/${r.id}`}>{r.entry_number}</Link></td>
+              <td>{r.vendor_name}</td>
+              <td><span className={`pill ${r.status === 'closed' ? 'pill-success' : 'pill-warning'}`}>{r.status}</span></td>
             </>
           )}
-
-          {recent.length > 0 && (
-            <div className="card">
-              <h3>Recent Gate Entries</h3>
-              <table className="table">
-                <thead><tr><th>Number</th><th>Vehicle</th><th>Vendor</th><th>Status</th></tr></thead>
-                <tbody>
-                  {recent.map(r => (
-                    <tr key={r.id} onClick={() => window.location.href = `/gate-entries/${r.id}`} style={{ cursor: 'pointer' }}>
-                      <td>{r.entry_number}</td>
-                      <td>{r.vehicle_number}</td>
-                      <td>{r.vendor_name}</td>
-                      <td><span className={`pill pill-${r.status}`}>{r.status}</span></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          cols={['Number', 'Vendor', 'Status']}
+        />
+        <RecentCard title="Recent GRNs" linkTo="/grns" rows={recent.grns}
+          render={(r) => (
+            <>
+              <td><Link to={`/grns/${r.id}`}>{r.grn_number}</Link></td>
+              <td>{r.vendor_name}</td>
+              <td><span className={`pill ${r.status === 'closed' ? 'pill-success' : 'pill-warning'}`}>{r.status}</span></td>
+            </>
           )}
-        </>
-      )}
+          cols={['Number', 'Vendor', 'Status']}
+        />
+        <RecentCard title="Recent Dispatches" linkTo="/dispatch" rows={recent.dispatch}
+          render={(r) => (
+            <>
+              <td>{r.dispatch_number}</td>
+              <td>{r.party_name}</td>
+              <td><span className={`pill ${r.status === 'closed' ? 'pill-success' : 'pill-warning'}`}>{r.status}</span></td>
+            </>
+          )}
+          cols={['Number', 'Party', 'Status']}
+        />
+      </div>
+    </>
+  );
+}
+
+function RecentCard({ title, linkTo, rows, render, cols }) {
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h3>{title}</h3>
+        <Link to={linkTo} className="btn-ghost btn-sm">View all →</Link>
+      </div>
+      <div className="card-body tight">
+        <table className="data">
+          <thead><tr>{cols.map(c => <th key={c}>{c}</th>)}</tr></thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr><td colSpan={cols.length} style={{ textAlign: 'center', color: '#9ca3af', padding: 24 }}>
+                No records yet
+              </td></tr>
+            ) : rows.map((r, i) => <tr key={r.id || i}>{render(r)}</tr>)}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
