@@ -1,13 +1,20 @@
 """Application configuration loaded from environment."""
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
+import os
+from dotenv import load_dotenv
 
 
 class Settings(BaseSettings):
+    # if os.getenv("RENDER"):
+    #     pass
+    # else:
+    #     load_dotenv(".env.example")
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
     # Database
-    database_url: str = "postgresql://pragati:pragati@localhost:5432/pragati_sales"
+    # database_url: str = "postgresql://pragati:pragati@localhost:5432/pragati_sales"
+    database_url: str = "postgresql://pragati:admin@localhost:5432/pragati_sales"
 
     # App
     app_secret_key: str = "change-me"
@@ -52,11 +59,16 @@ class Settings(BaseSettings):
     celery_eager: bool = False               # True = run tasks inline (no worker needed; for tests)
 
     # Zoho
-    zoho_client_id: str = ""
-    zoho_client_secret: str = ""
-    zoho_refresh_token: str = ""
-    zoho_org_id: str = ""
-    zoho_dc: str = "in"
+    # zoho_client_id: str = ""
+    # zoho_client_secret: str = ""
+    # zoho_refresh_token: str = ""
+    # zoho_org_id: str = ""
+    # zoho_dc: str = "in"
+    zoho_client_id: str 
+    zoho_client_secret: str
+    zoho_refresh_token: str
+    zoho_org_id: str
+    zoho_dc: str
 
     # Files
     upload_dir: str = "./uploads"
