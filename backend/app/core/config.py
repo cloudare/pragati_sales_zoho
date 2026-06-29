@@ -13,8 +13,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
     # Database
-    # database_url: str = "postgresql://pragati:pragati@localhost:5432/pragati_sales"
-    database_url: str = "postgresql://pragati:admin@localhost:5432/pragati_sales"
+    database_url: str = "postgresql://pragati:pragati@localhost:5432/pragati_sales"
+    # database_url: str = "postgresql://pragati:admin@localhost:5432/pragati_sales"
 
     # App
     app_secret_key: str = "change-me"

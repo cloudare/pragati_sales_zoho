@@ -34,7 +34,7 @@ export default function GRNDetail() {
   };
 
   const submit = async () => {
-    if (!confirm('Push this GRN to Zoho as a Purchase Bill?')) return;
+    if (!confirm('Push this GRN to Zoho as a Purchase Receive?')) return;
     setSubmitting(true);
     try {
       const r = await api.post(`/api/grns/${id}/submit`);
