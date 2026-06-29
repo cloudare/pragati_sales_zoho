@@ -12,6 +12,8 @@ import httpx
 from typing import Optional
 from ..core.config import settings
 
+import os
+from dotenv import load_dotenv
 
 class ZohoBooksClient:
     def __init__(self):
@@ -34,6 +36,7 @@ class ZohoBooksClient:
         r.raise_for_status()
         data = r.json()
         self._access_token = data["access_token"]
+        print("dataaaa ", data["access_token"])
         # tokens typically last 3600s; refresh 60s early
         self._token_expires_at = time.time() + data.get("expires_in", 3600) - 60
         return self._access_token
@@ -141,10 +144,109 @@ class ZohoBooksClient:
     def create_customer_payment(self, payload: dict) -> dict:
         return self._request("POST", "/customerpayments", json=payload)
 
+class ZohoInventoryClient:
+    def __init__(self):
+        self._access_token = None
+        self._token_expires_at = 0
+        self.base = f"{settings.zoho_api_base}/inventory/v1"
+        self.org_id = settings.zoho_org_id
+
+    # def _get_token(self):
+    #     return zoho_client._get_token()
+    def _get_token(self) -> str:
+        return zoho_client._get_token()
+
+    def _headers(self):
+        return {
+            "Authorization": f"Zoho-oauthtoken {self._get_token()}",
+            "Content-Type": "application/json",
+        }
+
+    def _request(self, method: str, path: str, **kwargs):
+        url = f"{self.base}{path}"
+        params = kwargs.pop("params", {}) or {}
+        params["organization_id"] = self.org_id
+
+        headers = self._headers()
+
+        with httpx.Client(timeout=60.0) as client:
+            resp = client.request(
+                method,
+                url,
+                params=params,
+                headers=headers,
+                **kwargs
+            )
+
+            if resp.status_code == 401:
+                zoho_client._access_token = None
+                headers = self._headers()
+                resp = client.request(
+                    method,
+                    url,
+                    params=params,
+                    headers=headers,
+                    **kwargs
+                )
+
+            if resp.status_code >= 400:
+                print("Zoho Status Code =", resp.status_code)
+                print("Zoho Response =", resp.text)
+
+            resp.raise_for_status()
+            return resp.json()
+        
+    # def create_purchase_receive(self, payload: dict):
+    #     return self._request(
+    #         "POST",
+    #         "/purchasereceives",
+    #         json=payload,
+    #     )
+    def create_purchase_receive(self, payload: dict):
+        po_id = payload.pop("purchase_order_id", None)
+        return self._request(
+            "POST",
+            "/purchasereceives",
+            params={"purchaseorder_id": po_id},
+            json=payload,
+        )
+    
+    def list_purchase_orders(
+        self,
+        vendor_id: str | None = None,
+        page: int = 1,
+        per_page: int = 200,
+    ) -> dict:
+        params = {
+            "page": page,
+            "per_page": per_page,
+        }
+
+        if vendor_id:
+            params["vendor_id"] = vendor_id
+
+        return self._request(
+            "GET",
+            "/purchaseorders",
+            params=params,
+        )
+
+    def get_purchase_order(
+        self,
+        purchase_order_id: str,
+    ) -> dict:
+        return self._request(
+            "GET",
+            f"/purchaseorders/{purchase_order_id}",
+        )
 
 # Singleton
 zoho_client = ZohoBooksClient()
+zoho_inventory_client = ZohoInventoryClient()
 
 
 def get_zoho_client() -> ZohoBooksClient:
     return zoho_client
+
+def get_zoho_inventory_client() -> ZohoInventoryClient:
+    return zoho_inventory_client

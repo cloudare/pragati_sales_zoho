@@ -156,6 +156,8 @@ class GateEntry(Base):
     driver_phone = Column(String(20))
     vendor_name = Column(String(256), nullable=False)
     vendor_zoho_id = Column(String(64))  # Zoho contact id if matched
+    zoho_purchase_order_id = Column(String(64))
+    purchase_order_number = Column(String(64))
     expected_items = Column(Text)
     invoice_ref = Column(String(64))
     notes = Column(Text)
@@ -188,13 +190,18 @@ class GRN(Base):
     gate_entry_id = Column(Integer, ForeignKey("gate_entries.id"))
     vendor_zoho_id = Column(String(64), nullable=False)
     vendor_name = Column(String(256), nullable=False)
+    zoho_purchase_order_id = Column(String(64))
+    purchase_order_number = Column(String(64))
+    purchase_receive_number = Column(String(64))
     invoice_ref = Column(String(64))
     invoice_date = Column(DateTime)
+    received_date = Column(DateTime)
     notes = Column(Text)
     status = Column(SAEnum(GRNStatus), default=GRNStatus.draft, nullable=False)
 
     # Zoho linkage
     zoho_purchase_bill_id = Column(String(64))
+    zoho_purchase_receive_id = Column(String(64))
     zoho_credit_note_id = Column(String(64))  # for shortage/damage
     zoho_error = Column(Text)
 
@@ -214,6 +221,7 @@ class GRNLine(Base):
     __tablename__ = "grn_lines"
     id = Column(Integer, primary_key=True)
     grn_id = Column(Integer, ForeignKey("grns.id", ondelete="CASCADE"), nullable=False)
+    po_line_item_id = Column(String(64))
     item_zoho_id = Column(String(64), nullable=False)
     item_name = Column(String(256), nullable=False)
     unit = Column(String(16))
@@ -539,12 +547,12 @@ class ZohoItemCache(Base):
     id = Column(Integer, primary_key=True)
     zoho_item_id = Column(String(64), unique=True, nullable=False, index=True)
     name = Column(String(256), nullable=False, index=True)
-    sku = Column(String(64), index=True)
-    unit = Column(String(16))
+    sku = Column(String(100), index=True)
+    unit = Column(String(100))
     rate = Column(Float, default=0)
     purchase_rate = Column(Float, default=0)
     mrp = Column(Float, default=0)
-    brand = Column(String(64), index=True)
+    brand = Column(String(100), index=True)
     stock_on_hand = Column(Float, default=0)
     is_active = Column(Boolean, default=True)
     last_synced_at = Column(DateTime(timezone=True), server_default=func.now())

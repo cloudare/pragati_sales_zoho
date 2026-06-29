@@ -22,6 +22,7 @@ from ..models import (
 )
 from ..services.tally_outbound import drain_outbound_queue, reconciliation_report
 from ..services.zoho_master_sync import sync_items, sync_contacts
+from ..integrations.zoho import (get_zoho_client, get_zoho_inventory_client,)
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
@@ -109,3 +110,21 @@ def list_contacts_cache(q: Optional[str] = None, contact_type: Optional[str] = N
         "gst_no": r.gst_no, "phone": r.phone,
         "last_synced_at": r.last_synced_at.isoformat() if r.last_synced_at else None,
     } for r in query.limit(limit).all()]
+
+@router.get("/zoho/purchase-orders")
+def list_purchase_orders(
+    vendor_id: Optional[str] = None,
+):
+    inventory = get_zoho_inventory_client()
+    return inventory.list_purchase_orders(
+        vendor_id=vendor_id
+    )
+
+@router.get("/zoho/purchase-orders/{purchase_order_id}")
+def get_purchase_order(
+    purchase_order_id: str,
+):
+    inventory = get_zoho_inventory_client()
+    return inventory.get_purchase_order(
+        purchase_order_id
+    )

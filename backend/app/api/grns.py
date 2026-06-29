@@ -12,12 +12,13 @@ from ..core.database import get_db
 from ..core.deps import get_current_user, require_roles
 from ..core.config import settings
 from ..models import GRN, GRNLine, GRNPhoto, GRNStatus, GateEntry, GateEntryStatus, User, UserRole, AuditLog
-from ..integrations.zoho import zoho_client
+from ..integrations.zoho import zoho_client, zoho_inventory_client
 
 router = APIRouter(prefix="/api/grns", tags=["grns"])
 
 
 class GRNLineIn(BaseModel):
+    po_line_item_id: Optional[str] = None
     item_zoho_id: str
     item_name: str
     unit: Optional[str] = "pcs"
@@ -31,12 +32,27 @@ class GRNLineIn(BaseModel):
     notes: Optional[str] = None
 
 
+# class GRNCreate(BaseModel):
+#     gate_entry_id: Optional[int] = None
+#     vendor_zoho_id: str
+#     vendor_name: str
+#     invoice_ref: Optional[str] = None
+#     invoice_date: Optional[datetime] = None
+#     notes: Optional[str] = None
+#     lines: List[GRNLineIn]
+
+
 class GRNCreate(BaseModel):
     gate_entry_id: Optional[int] = None
     vendor_zoho_id: str
     vendor_name: str
+    # zoho_purchase_order_id: Optional[str] = None
+    purchase_order_id: Optional[str] = None
+    purchase_order_number: Optional[str] = None
+    purchase_receive_number: Optional[str] = None
     invoice_ref: Optional[str] = None
-    invoice_date: Optional[datetime] = None
+    # invoice_date: Optional[datetime] = None
+    received_date: Optional[datetime] = None
     notes: Optional[str] = None
     lines: List[GRNLineIn]
 
@@ -65,8 +81,12 @@ def create_grn(
         gate_entry_id=payload.gate_entry_id,
         vendor_zoho_id=payload.vendor_zoho_id,
         vendor_name=payload.vendor_name,
+        zoho_purchase_order_id=payload.purchase_order_id,
+        purchase_order_number=payload.purchase_order_number,
+        purchase_receive_number=payload.purchase_receive_number,
+        received_date=payload.received_date,
         invoice_ref=payload.invoice_ref,
-        invoice_date=payload.invoice_date,
+        # invoice_date=payload.invoice_date,
         notes=payload.notes,
         status=GRNStatus.draft,
         created_by_id=user.id,
@@ -158,27 +178,83 @@ def submit_grn(
 
     try:
         # 1. Create Purchase Bill in Zoho
-        bill_lines = []
-        for ln in grn.lines:
-            net_qty = ln.received_qty  # received includes damaged units physically present
-            bill_lines.append({
-                "item_id": ln.item_zoho_id,
-                "name": ln.item_name,
-                "quantity": net_qty,
-                "rate": ln.rate,
-                "unit": ln.unit or "pcs",
-            })
+        # bill_lines = []
+        # for ln in grn.lines:
+        #     net_qty = ln.received_qty  # received includes damaged units physically present
+        #     bill_lines.append({
+        #         "item_id": ln.item_zoho_id,
+        #         "name": ln.item_name,
+        #         "quantity": net_qty,
+        #         "rate": ln.rate,
+        #         "unit": ln.unit or "pcs",
+        #     })
 
-        bill_payload = {
-            "vendor_id": grn.vendor_zoho_id,
-            "bill_number": grn.invoice_ref or grn.grn_number,
-            "date": (grn.invoice_date or datetime.utcnow()).strftime("%Y-%m-%d"),
-            "line_items": bill_lines,
-            "notes": f"GRN: {grn.grn_number}",
+        # bill_payload = {
+        #     "vendor_id": grn.vendor_zoho_id,
+        #     "bill_number": grn.invoice_ref or grn.grn_number,
+        #     "date": (grn.invoice_date or datetime.utcnow()).strftime("%Y-%m-%d"),
+        #     "line_items": bill_lines,
+        #     "notes": f"GRN: {grn.grn_number}",
+        # }
+        # bill_resp = zoho_client.create_bill(bill_payload)
+        # bill_id = bill_resp.get("bill", {}).get("bill_id")
+        # grn.zoho_purchase_bill_id = bill_id
+
+        # 1. Create Purchase Receive in Zoho Inventory
+        if not grn.zoho_purchase_order_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Purchase Order ID is missing for this GRN"
+            )
+        print("PO ID =", grn.zoho_purchase_order_id)
+        print("Received Date =", grn.received_date)
+        print("Lines =", grn.lines)
+        receive_lines = []
+
+        for ln in grn.lines:
+            if ln.received_qty <= 0:
+                continue
+            print("line_item_id =", ln.po_line_item_id, "quantity =", ln.received_qty)
+            receive_lines.append({
+                "line_item_id": ln.po_line_item_id,
+                "quantity": ln.received_qty,
+            })
+        if not receive_lines:
+            raise HTTPException(
+                status_code=400,
+                detail="No items to receive."
+        )
+
+        po = zoho_inventory_client.get_purchase_order(
+            grn.zoho_purchase_order_id
+        )
+
+        print("PO Response =", po)
+
+        purchase_receive_payload = {
+            "purchase_order_id": grn.zoho_purchase_order_id,
+            "date": (
+                grn.received_date or datetime.utcnow()
+            ).strftime("%Y-%m-%d"),
+            "line_items": receive_lines,
+            "reference_number": grn.grn_number,
         }
-        bill_resp = zoho_client.create_bill(bill_payload)
-        bill_id = bill_resp.get("bill", {}).get("bill_id")
-        grn.zoho_purchase_bill_id = bill_id
+
+        print("Payload =", purchase_receive_payload) 
+        pr_resp = zoho_inventory_client.create_purchase_receive(purchase_receive_payload)
+        print("zoho response = ", pr_resp)
+
+        purchase_receive = (
+            pr_resp.get("purchase_receive", {})
+        )
+
+        grn.zoho_purchase_receive_id = (
+            purchase_receive.get("purchase_receive_id")
+        )
+
+        grn.purchase_receive_number = (
+            purchase_receive.get("receive_number")
+        )
 
         # 2. If there is shortage/damage, create a Vendor Credit Note
         credit_lines = []
@@ -231,9 +307,19 @@ def submit_grn(
             if ge:
                 ge.status = GateEntryStatus.grn_done
 
+        # db.add(AuditLog(
+        #     actor_id=user.id, action="grn.submit", entity_type="grn", entity_id=str(grn.id),
+        #     details={"zoho_bill_id": bill_id, "zoho_credit_id": grn.zoho_credit_note_id}
+        # ))
         db.add(AuditLog(
-            actor_id=user.id, action="grn.submit", entity_type="grn", entity_id=str(grn.id),
-            details={"zoho_bill_id": bill_id, "zoho_credit_id": grn.zoho_credit_note_id}
+            actor_id=user.id,
+            action="grn.submit",
+            entity_type="grn",
+            entity_id=str(grn.id),
+            details={
+                "zoho_purchase_receive_id": grn.zoho_purchase_receive_id,
+                "zoho_credit_id": grn.zoho_credit_note_id
+            }
         ))
         db.commit()
         db.refresh(grn)
@@ -253,9 +339,14 @@ def _serialize(grn: GRN) -> dict:
         "gate_entry_id": grn.gate_entry_id,
         "vendor_name": grn.vendor_name,
         "vendor_zoho_id": grn.vendor_zoho_id,
+        "zoho_purchase_order_id": grn.zoho_purchase_order_id,
+        "purchase_order_number": grn.purchase_order_number,
+        "purchase_receive_number": grn.purchase_receive_number,
+        "received_date": grn.received_date,
         "invoice_ref": grn.invoice_ref,
         "status": grn.status.value,
         "zoho_purchase_bill_id": grn.zoho_purchase_bill_id,
+        "zoho_purchase_receive_id": grn.zoho_purchase_receive_id,
         "zoho_credit_note_id": grn.zoho_credit_note_id,
         "zoho_error": grn.zoho_error,
         "notes": grn.notes,
