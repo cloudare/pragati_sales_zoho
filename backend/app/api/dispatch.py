@@ -122,6 +122,7 @@ def _out(d: DispatchOrder) -> dict:
         "gate_out_slip_number": d.gate_out_slip_number,
         "gate_out_at": d.gate_out_at.isoformat() if d.gate_out_at else None,
         "closed_at": d.closed_at.isoformat() if d.closed_at else None,
+        "closure_notes": d.closure_notes,
         "lines": [{
             "id": l.id, "item_zoho_id": l.item_zoho_id, "item_name": l.item_name,
             "bin_location": l.bin_location, "so_qty": l.so_qty,
