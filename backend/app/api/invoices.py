@@ -34,6 +34,35 @@ class InvoiceCreate(BaseModel):
     notes: Optional[str] = None
     lines: List[InvoiceLineIn]
 
+@router.get("")
+def list_invoices(
+    q: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """List invoices from Zoho Books (system of record).
+
+    The custom app stores no invoice rows of its own — invoices live in Zoho — so
+    this endpoint proxies Zoho's invoice list and maps the fields the UI needs.
+    """
+    try:
+        resp = zoho_client.list_invoices(customer_name=q, status=status, page=page)
+    except Exception:
+        return []  # Don't break the page if Zoho is unreachable / not configured
+
+    out = []
+    for inv in resp.get("invoices", []) or []:
+        out.append({
+            "invoice_id": inv.get("invoice_id"),
+            "invoice_number": inv.get("invoice_number"),
+            "customer_name": inv.get("customer_name"),
+            "date": inv.get("date"),
+            "total": inv.get("total", 0),
+            "status": inv.get("status"),
+        })
+    return out
 
 @router.post("/create")
 def create_invoice(

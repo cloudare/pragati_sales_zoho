@@ -417,6 +417,10 @@ class DispatchOrder(Base):
     zoho_invoice_ids = Column(JSON, default=list)
     invoiced_at = Column(DateTime(timezone=True))
 
+    # Zoho Inventory package (created at pick time from picked quantities)
+    zoho_package_id = Column(String(64))
+    packed_at = Column(DateTime(timezone=True))
+
     # LR (Lorry Receipt)
     lr_number = Column(String(32))
     transporter_name = Column(String(128))

@@ -109,6 +109,8 @@ def _out(d: DispatchOrder) -> dict:
         "amendment_reason": d.amendment_reason,
         "picked_at": d.picked_at.isoformat() if d.picked_at else None,
         "zoho_invoice_ids": d.zoho_invoice_ids, "invoiced_at": d.invoiced_at.isoformat() if d.invoiced_at else None,
+        "zoho_package_id": d.zoho_package_id,
+        "packed_at": d.packed_at.isoformat() if d.packed_at else None,
         "lr_number": d.lr_number, "transporter_name": d.transporter_name,
         "vehicle_number": d.vehicle_number, "driver_name": d.driver_name,
         "lr_created_at": d.lr_created_at.isoformat() if d.lr_created_at else None,
@@ -139,6 +141,38 @@ def _audit(db: Session, user: User, action: str, d: DispatchOrder, details: dict
 def create_dispatch(req: DispatchCreate, db: Session = Depends(get_db),
                     user: User = Depends(require_roles(UserRole.sales, UserRole.warehouse, UserRole.admin))):
     """Step 1: Sales Order is confirmed → DispatchOrder created."""
+    # Validate that no line quantity exceeds what the linked Zoho Sales Order actually
+    # ordered. The SO is the source of truth; a user must not inflate a line beyond it.
+    # Best-effort: if Zoho is unreachable we skip the check rather than block creation.
+    so_ids = [str(s).strip() for s in (req.so_zoho_ids or []) if str(s).strip().isdigit()]
+    if so_ids:
+        from ..integrations.zoho import get_zoho_client
+        zoho = get_zoho_client()
+        # Build {item_zoho_id: total ordered qty across all linked SOs}
+        so_qty_by_item: Dict[str, float] = {}
+        fetched_any = False
+        for so_id in so_ids:
+            try:
+                resp = zoho.get_sales_order(so_id)
+                fetched_any = True
+            except Exception:
+                continue
+            for li in (resp.get("salesorder") or {}).get("line_items", []) or []:
+                iid = li.get("item_id")
+                if iid:
+                    so_qty_by_item[iid] = so_qty_by_item.get(iid, 0) + float(li.get("quantity", 0) or 0)
+
+        if fetched_any:
+            errors = []
+            for line in req.lines:
+                if line.item_zoho_id in so_qty_by_item:
+                    ordered = so_qty_by_item[line.item_zoho_id]
+                    if float(line.so_qty) > ordered:
+                        errors.append(
+                            f"{line.item_name}: qty {line.so_qty} exceeds Sales Order qty {ordered}"
+                        )
+            if errors:
+                raise HTTPException(status_code=400, detail="; ".join(errors))
     d = DispatchOrder(
         dispatch_number=_gen_dispatch_number(db),
         status=PicklistStatus.so_confirmed,
@@ -157,6 +191,29 @@ def create_dispatch(req: DispatchCreate, db: Session = Depends(get_db),
     _audit(db, user, "dispatch.create", d, {"so_zoho_ids": req.so_zoho_ids})
     db.commit()
     db.refresh(d)
+
+    # Step 1 (Zoho): if this dispatch is linked to a real Zoho Sales Order, make sure
+    # that SO is confirmed (draft -> open). This is best-effort: an already-open SO or a
+    # transient Zoho error must NOT block dispatch creation, which is already committed.
+    # Keep only values that look like real Zoho ids (numeric strings); skip free-text fallbacks.
+    so_ids = [str(s).strip() for s in (req.so_zoho_ids or []) if str(s).strip().isdigit()]
+    if so_ids:
+        from ..integrations.zoho import get_zoho_client
+        zoho = get_zoho_client()
+        confirmed, skipped = [], []
+        for so_id in so_ids:
+            try:
+                zoho.confirm_sales_order(so_id)
+                confirmed.append(so_id)
+            except Exception as e:
+                # Most common: SO already 'open' -> Zoho rejects re-confirm. Treat as fine.
+                skipped.append({"so_id": so_id, "reason": str(e)[:200]})
+        if confirmed or skipped:
+            _audit(db, user, "dispatch.so_confirmed_in_zoho", d,
+                   {"confirmed": confirmed, "skipped": skipped})
+            db.commit()
+            db.refresh(d)
+
     return _out(d)
 
 
@@ -191,13 +248,37 @@ def amend(dispatch_id: int, req: AmendRequest, db: Session = Depends(get_db),
                             detail="Can only amend a picklist that hasn't been picked yet")
 
     line_map = {l.id: l for l in d.lines}
-    for a in req.lines:
-        line = line_map.get(a.line_id)
+    # for a in req.lines:
+    #     line = line_map.get(a.line_id)
+    #     if not line:
+    #         raise HTTPException(status_code=400, detail=f"Line {a.line_id} not on this dispatch")
+    #     line.amended_qty = a.amended_qty
+    #     if a.notes:
+    #         line.notes = a.notes
+
+
+    # Validate every line BEFORE applying any change, so a bad line can't leave a
+    # half-saved pick. Picked qty cannot exceed the ordered qty (amended qty wins if the
+    # line was amended at Step 3), and quantities cannot be negative.
+    errors = []
+    for p in req.lines:
+        line = line_map.get(p.line_id)
         if not line:
-            raise HTTPException(status_code=400, detail=f"Line {a.line_id} not on this dispatch")
-        line.amended_qty = a.amended_qty
-        if a.notes:
-            line.notes = a.notes
+            raise HTTPException(status_code=400, detail=f"Line {p.line_id} not on this dispatch")
+        ordered = line.amended_qty if line.amended_qty is not None else line.so_qty
+        if p.picked_qty < 0 or p.short_pick_qty < 0:
+            errors.append(f"{line.item_name}: quantities cannot be negative")
+        if p.picked_qty > ordered:
+            errors.append(
+                f"{line.item_name}: picked {p.picked_qty} exceeds ordered {ordered}"
+            )
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    for p in req.lines:
+        line = line_map.get(p.line_id)
+        line.picked_qty = p.picked_qty
+        line.short_pick_qty = p.short_pick_qty
     d.status = PicklistStatus.amended
     d.amended_at = datetime.now(timezone.utc)
     d.amendment_reason = req.reason
@@ -230,6 +311,48 @@ def pick(dispatch_id: int, req: PickRequest, db: Session = Depends(get_db),
     d.picker_user_id = user.id
     _audit(db, user, "dispatch.picked", d)
     db.commit()
+
+    # Step 4 (Zoho Inventory): create a Package against the linked Sales Order using the
+    # picked quantities. Zoho identifies packed lines by the SO's line_item_id, so we
+    # re-fetch the SO and match our dispatch lines by item_zoho_id. Best-effort: a Zoho
+    # error must not undo the pick, which is already committed.
+    so_ids = [str(s).strip() for s in (d.so_zoho_ids or []) if str(s).strip().isdigit()]
+    if so_ids and not d.zoho_package_id:
+        from ..integrations.zoho import get_zoho_client
+        zoho = get_zoho_client()
+        try:
+            # Map item_zoho_id -> SO line_item_id from the (first) linked SO.
+            so_resp = zoho.get_sales_order(so_ids[0])
+            so_obj = so_resp.get("salesorder") or {}
+            item_to_soline = {}
+            for li in so_obj.get("line_items", []) or []:
+                if li.get("item_id"):
+                    item_to_soline[li["item_id"]] = li.get("line_item_id")
+
+            pkg_lines = []
+            for line in d.lines:
+                qty = line.picked_qty or 0
+                so_line_id = item_to_soline.get(line.item_zoho_id)
+                if qty > 0 and so_line_id:
+                    pkg_lines.append({"so_line_item_id": so_line_id, "quantity": qty})
+
+            if pkg_lines:
+                pkg = zoho.create_package(
+                    salesorder_id=so_ids[0],
+                    line_items=pkg_lines,
+                    package_number=d.dispatch_number,
+                )
+                pkg_id = (pkg.get("package") or {}).get("package_id") or pkg.get("package_id")
+                d.zoho_package_id = pkg_id
+                d.packed_at = datetime.now(timezone.utc)
+                _audit(db, user, "dispatch.packed_in_zoho", d, {"package_id": pkg_id})
+                db.commit()
+        except Exception as e:
+            _audit(db, user, "dispatch.package_failed", d, {"error": str(e)[:300]})
+            db.commit()
+
+    db.refresh(d)
+    
     return _out(d)
 
 
