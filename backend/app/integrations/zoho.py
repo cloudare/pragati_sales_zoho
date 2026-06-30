@@ -129,12 +129,65 @@ class ZohoBooksClient:
     def create_bill(self, payload: dict) -> dict:
         return self._request("POST", "/bills", json=payload)
 
+    # ---------- SALES ORDERS ----------
+    def list_sales_orders(self, customer_id: str | None = None, status: str | None = None,
+                          search: str | None = None, page: int = 1, per_page: int = 200) -> dict:
+        params: dict = {"page": page, "per_page": per_page, "sort_column": "date", "sort_order": "D"}
+        if customer_id:
+            params["customer_id"] = customer_id
+        if status:
+            params["status"] = status            # e.g. 'open', 'confirmed'
+        if search:
+            params["salesorder_number_contains"] = search
+        return self._request("GET", "/salesorders", params=params)
+
+    def get_sales_order(self, salesorder_id: str) -> dict:
+        return self._request("GET", f"/salesorders/{salesorder_id}")
+    
+    def confirm_sales_order(self, salesorder_id: str) -> dict:
+        """Mark a draft sales order as open/confirmed in Zoho Books.
+
+        No-op-safe at the caller: Zoho returns an error if the SO is already open,
+        so callers should treat 'already open' as success rather than failure.
+        """
+        return self._request("POST", f"/salesorders/{salesorder_id}/status/open")
+    
+    def create_package(self, salesorder_id: str, line_items: list, package_number: str | None = None,
+                       date: str | None = None, notes: str | None = None) -> dict:
+        """Create a Zoho Inventory Package against a sales order.
+
+        line_items: list of {"so_line_item_id": <SO line id>, "quantity": <picked qty>}.
+        Zoho identifies each packed line by the SALES ORDER line_item_id, not the item id.
+        """
+        payload: dict = {
+            "line_items": [
+                {"so_line_item_id": li["so_line_item_id"], "quantity": li["quantity"]}
+                for li in line_items
+            ]
+        }
+        if package_number:
+            payload["package_number"] = package_number
+        if date:
+            payload["date"] = date
+        if notes:
+            payload["notes"] = notes
+        return self._request("POST", "/packages", params={"salesorder_id": salesorder_id}, json=payload)
+
     # ---------- INVOICES ----------
     def create_invoice(self, payload: dict) -> dict:
         return self._request("POST", "/invoices", json=payload)
 
     def get_invoice(self, invoice_id: str) -> dict:
         return self._request("GET", f"/invoices/{invoice_id}")
+
+    def list_invoices(self, customer_name: str | None = None, status: str | None = None,
+                      page: int = 1, per_page: int = 200) -> dict:
+        params: dict = {"page": page, "per_page": per_page, "sort_column": "date", "sort_order": "D"}
+        if customer_name:
+            params["customer_name_contains"] = customer_name
+        if status:
+            params["status"] = status
+        return self._request("GET", "/invoices", params=params)
 
     # ---------- CREDIT NOTES ----------
     def create_credit_note(self, payload: dict) -> dict:
@@ -211,25 +264,52 @@ class ZohoInventoryClient:
             json=payload,
         )
     
+    # def list_purchase_orders(
+    #     self,
+    #     vendor_id: str | None = None,
+    #     page: int = 1,
+    #     per_page: int = 200,
+    # ) -> dict:
+    #     params = {
+    #         "page": page,
+    #         "per_page": per_page,
+    #     }
+
+    #     if vendor_id:
+    #         params["vendor_id"] = vendor_id
+
+    #     return self._request(
+    #         "GET",
+    #         "/purchaseorders",
+    #         params=params,
+    #     )
     def list_purchase_orders(
         self,
         vendor_id: str | None = None,
         page: int = 1,
         per_page: int = 200,
+        receivable_only: bool = True,
     ) -> dict:
         params = {
             "page": page,
             "per_page": per_page,
         }
-
         if vendor_id:
             params["vendor_id"] = vendor_id
 
-        return self._request(
-            "GET",
-            "/purchaseorders",
-            params=params,
-        )
+        resp = self._request("GET", "/purchaseorders", params=params)
+
+        if receivable_only:
+            # Keep only POs that still have stock to receive.
+            RECEIVABLE = {"to_be_received", "partially_received"}
+            EXCLUDED_STATUS = {"closed", "cancelled", "draft"}
+            resp["purchaseorders"] = [
+                po for po in resp.get("purchaseorders", [])
+                if po.get("received_status") in RECEIVABLE
+                and po.get("status") not in EXCLUDED_STATUS
+            ]
+
+        return resp
 
     def get_purchase_order(
         self,

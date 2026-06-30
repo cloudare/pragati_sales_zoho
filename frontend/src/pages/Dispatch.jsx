@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api/client';
+import { ContactPicker } from '../components/ContactPicker';
+import Typeahead from '../components/Typeahead';
 
 const STEPS = [
   { key: 'so_confirmed',       label: '1. SO Confirmed' },
@@ -20,20 +22,132 @@ function statusPill(s) {
   return 'pill-warning';
 }
 
+const emptyLine = () => ({ item_zoho_id: '', item_name: '', so_qty: '', rate: '', bin_location: '' });
+
 export default function Dispatch() {
   const [list, setList] = useState([]);
   const [sel, setSel] = useState(null);
   const [err, setErr] = useState('');
+  const [loadingList, setLoadingList] = useState(true);
   const [lrForm, setLrForm] = useState({
     transporter_name: '', vehicle_number: '', driver_name: '', driver_phone: '',
   });
+  // ---- New Dispatch form state ----
+  const [salesOrders, setSalesOrders] = useState([]);
+  const [selectedSO, setSelectedSO] = useState('');
+  const [loadingSO, setLoadingSO] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    party_zoho_id: '', party_name: '', so_zoho_ids: '',
+    lines: [emptyLine()],
+  });
+  const closeNew = () => {
+    setShowNew(false);
+    resetForm();
+    setSelectedSO('');
+    setLoadingSO(false);
+    setErr('');
+  };
 
+  const resetForm = () => setForm({ party_zoho_id: '', party_name: '', so_zoho_ids: '', lines: [emptyLine()] });
+  
+
+  const setLine = (i, patch) =>
+    setForm(f => ({ ...f, lines: f.lines.map((l, idx) => idx === i ? { ...l, ...patch } : l) }));
+
+  const addLine = () => setForm(f => ({ ...f, lines: [...f.lines, emptyLine()] }));
+  const removeLine = (i) =>
+    setForm(f => ({ ...f, lines: f.lines.length > 1 ? f.lines.filter((_, idx) => idx !== i) : f.lines }));
+
+  const canSave =
+    form.party_name.trim() &&
+    form.lines.some(l => l.item_name.trim() && Number(l.so_qty) > 0);
+
+  const createDispatch = async () => {
+    setErr('');
+    const lines = form.lines
+      .filter(l => l.item_name.trim() && Number(l.so_qty) > 0)
+      .map(l => ({
+        item_zoho_id: l.item_zoho_id || l.item_name.trim(),  // fall back to name if no synced id
+        item_name: l.item_name.trim(),
+        so_qty: Number(l.so_qty),
+        rate: Number(l.rate) || 0,
+        bin_location: l.bin_location || null,
+      }));
+
+    const payload = {
+      party_zoho_id: form.party_zoho_id || form.party_name.trim(),
+      party_name: form.party_name.trim(),
+      so_zoho_ids: form.so_zoho_ids
+        ? form.so_zoho_ids.split(',').map(s => s.trim()).filter(Boolean)
+        : [],
+      lines,
+    };
+
+    setSaving(true);
+    try {
+      const r = await api.post('/api/dispatch', payload);
+      setShowNew(false);
+      resetForm();
+      await load();
+      setSel(r.data);  // jump straight into the new dispatch
+    } catch (e) {
+      setErr(e.response?.data?.detail || String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // const load = async () => {
+  //   try { setList((await api.get('/api/dispatch')).data); }
+  //   catch (e) { setErr(e.response?.data?.detail || String(e)); }
+  // };
   const load = async () => {
+    setLoadingList(true);
     try { setList((await api.get('/api/dispatch')).data); }
     catch (e) { setErr(e.response?.data?.detail || String(e)); }
+    finally { setLoadingList(false); }
   };
   useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, []);
 
+  // new — loads sales orders when the modal opens
+  useEffect(() => {
+    if (!showNew) return;
+    // api.get('/api/sales-orders', { params: { status: 'open' } })
+    api.get('/api/sales-orders')
+      .then(r => setSalesOrders(r.data))
+      .catch(() => setSalesOrders([]));
+  }, [showNew]);
+
+  // 3c — when an SO is picked, fetch it and auto-fill party + lines
+  const pickSalesOrder = async (soId) => {
+    setSelectedSO(soId);
+    if (!soId) return;
+    setLoadingSO(true);
+    setErr('');
+    try {
+      const r = await api.get(`/api/sales-orders/${soId}`);
+      const so = r.data;
+      setForm({
+        party_zoho_id: so.party_zoho_id || '',
+        party_name: so.party_name || '',
+        so_zoho_ids: so.salesorder_id || '',
+        lines: (so.lines && so.lines.length ? so.lines : [emptyLine()]).map(l => ({
+          item_zoho_id: l.item_zoho_id || '',
+          item_name: l.item_name || '',
+          so_qty: l.so_qty ?? '',
+          rate: l.rate ?? '',
+          bin_location: l.bin_location || '',
+        })),
+      });
+    } catch (e) {
+      setErr(e.response?.data?.detail || String(e));
+    } finally {
+      setLoadingSO(false);
+    }
+  };
   const reload = async () => {
     if (!sel) return load();
     try { const r = await api.get(`/api/dispatch/${sel.id}`); setSel(r.data); load(); }
@@ -57,11 +171,17 @@ export default function Dispatch() {
 
       <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 16 }}>
         <div className="card">
-          <div className="card-header"><h3>Dispatches</h3></div>
+          {/* <div className="card-header"><h3>Dispatches</h3></div> */}
+          <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3>Dispatches</h3>
+            <button className="btn-sm btn-primary" onClick={() => { resetForm(); setShowNew(true); }}>
+              + New
+            </button>
+          </div>
           <div className="card-body tight">
             <table className="data">
               <thead><tr><th>#</th><th>Party</th><th>Status</th></tr></thead>
-              <tbody>
+              {/* <tbody>
                 {list.map(d => (
                   <tr key={d.id}
                       className={`clickable ${sel?.id === d.id ? 'selected' : ''}`}
@@ -74,6 +194,30 @@ export default function Dispatch() {
                 {list.length === 0 && (
                   <tr><td colSpan={3} style={{ textAlign: 'center', color: '#9ca3af', padding: 24 }}>
                     No dispatches yet.
+                  </td></tr>
+                )}
+              </tbody> */}
+              <tbody>
+                {loadingList && (
+                  <tr><td colSpan={3} style={{ padding: 0 }}>
+                    <div className="loader-wrap">
+                      <img src="/loader.gif" alt="" width={40} height={40} />
+                      <div className="loader-label">Loading dispatches…</div>
+                    </div>
+                  </td></tr>
+                )}
+                {!loadingList && list.map(d => (
+                  <tr key={d.id}
+                      className={`clickable ${sel?.id === d.id ? 'selected' : ''}`}
+                      onClick={() => setSel(d)}>
+                    <td>{d.dispatch_number}</td>
+                    <td>{d.party_name}</td>
+                    <td><span className={`pill ${statusPill(d.status)}`}>{d.status}</span></td>
+                  </tr>
+                ))}
+                {!loadingList && list.length === 0 && (
+                  <tr><td colSpan={3} style={{ textAlign: 'center', color: '#9ca3af', padding: 24 }}>
+                    No dispatches yet. Click <strong>+ New</strong> to create one.
                   </td></tr>
                 )}
               </tbody>
@@ -200,6 +344,183 @@ export default function Dispatch() {
           )}
         </div>
       </div>
+
+      {showNew && (
+        // <div className="modal-backdrop" onMouseDown={() => !saving && setShowNew(false)}>
+        <div className="modal-backdrop" onMouseDown={() => !saving && closeNew()}>
+          <div className="modal-card" onMouseDown={e => e.stopPropagation()}>
+            <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 className="mt-0 mb-0">New Dispatch Order</h3>
+              {/* <button className="btn-sm btn-secondary" onClick={() => !saving && setShowNew(false)}>✕</button> */}
+              <button className="btn-sm btn-secondary" onClick={() => !saving && closeNew()}>✕</button>
+            </div>
+            <div className="card-body">
+              <p className="text-muted text-small mb-md">
+                Step 1 of the PRD M6 flow — confirms a Sales Order and creates the dispatch. Pick a
+                party and add item lines. If master data isn't synced yet, you can type free-text names.
+              </p>
+
+              <div className="mb-md">
+                <label className="text-small">Party (customer)</label>
+                <ContactPicker
+                  type="customer"
+                  value={form.party_name}
+                  placeholder="Search customer…"
+                  onSelect={(c) => setForm(f => ({ ...f, party_name: c.name, party_zoho_id: c.zoho_contact_id || '' }))}
+                />
+                <input
+                  className="mt-sm"
+                  placeholder="…or type party name"
+                  value={form.party_name}
+                  onChange={e => setForm(f => ({ ...f, party_name: e.target.value }))}
+                />
+              </div>
+
+              {/* <div className="mb-md">
+                <label className="text-small">Sales Order Zoho IDs (optional, comma-separated)</label>
+                <input
+                  placeholder="e.g. 4567000000012345, 4567000000067890"
+                  value={form.so_zoho_ids}
+                  onChange={e => setForm(f => ({ ...f, so_zoho_ids: e.target.value }))}
+                />
+              </div> */}
+
+              <div className="mb-md">
+                <label className="text-small">Sales Order</label>
+                <select
+                  value={selectedSO}
+                  onChange={e => pickSalesOrder(e.target.value)}
+                  disabled={loadingSO}
+                >
+                  <option value="">— Select a Sales Order (auto-fills party & lines) —</option>
+                  {salesOrders.map(so => (
+                    // <option key={so.salesorder_id} value={so.salesorder_id}>
+                    //   {so.salesorder_number} · {so.customer_name} · {so.date} · ₹{Number(so.total || 0).toFixed(0)}
+                    // </option>
+                    <option key={so.salesorder_id} value={so.salesorder_id}>
+                      {so.salesorder_number} · {so.customer_name} · {so.status} · ₹{Number(so.total || 0).toFixed(0)}
+                    </option>
+                  ))}
+                </select>
+                {loadingSO && <div className="text-muted text-small mt-sm">Loading sales order…</div>}
+                {!loadingSO && salesOrders.length === 0 &&
+                  <div className="text-muted text-small mt-sm">No open sales orders found — you can still enter lines manually below.</div>}
+              </div>
+
+              {/* <h4 className="mb-sm">Item Lines</h4> */}
+              <table className="data mb-sm">
+                <h4 className="mb-sm">Item Lines</h4>
+
+              {loadingSO ? (
+                <div className="loader-wrap">
+                  <img src="/loader.gif" alt="" width={40} height={40} />
+                  <div className="loader-label">Loading line items…</div>
+                </div>
+              ) : (
+                <>
+                  <table className="data mb-sm">
+                    <thead><tr>
+                      <th style={{ minWidth: 200 }}>Item</th>
+                      <th className="text-right" style={{ width: 90 }}>SO Qty</th>
+                      <th className="text-right" style={{ width: 90 }}>Rate</th>
+                      {/* <th style={{ width: 90 }}>Bin</th> */}
+                      <th style={{ width: 36 }}></th>
+                    </tr></thead>
+                    <tbody>
+                      {form.lines.map((l, i) => (
+                        <tr key={i}>
+                          <td>
+                            <Typeahead
+                              value={l.item_name}
+                              onChange={(name) => setLine(i, { item_name: name })}
+                              onSelect={(it) => setLine(i, { item_name: it.name, item_zoho_id: it.zoho_item_id || '', rate: l.rate || it.rate || '' })}
+                              endpoint="/api/sync/zoho/items"
+                              idField="zoho_item_id"
+                              placeholder="Search item…"
+                            />
+                          </td>
+                          <td>
+                            <input type="number" min="0" className="text-right" value={l.so_qty}
+                              onChange={e => setLine(i, { so_qty: e.target.value })} />
+                          </td>
+                          <td>
+                            <input type="number" min="0" className="text-right" value={l.rate}
+                              onChange={e => setLine(i, { rate: e.target.value })} />
+                          </td>
+                          {/* <td>
+                            <input value={l.bin_location}
+                              onChange={e => setLine(i, { bin_location: e.target.value })} />
+                          </td> */}
+                          <td className="text-center">
+                            <button className="btn-sm btn-secondary" title="Remove line"
+                              onClick={() => removeLine(i)} disabled={form.lines.length === 1}>✕</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <button className="btn-sm btn-secondary mb-md" onClick={addLine}>+ Add line</button>
+                </>
+              )}
+                
+                {/* <thead><tr>
+                  <th style={{ minWidth: 200 }}>Item</th>
+                  <th className="text-right" style={{ width: 100 }}>SO Qty</th>
+                  <th className="text-right" style={{ width: 90 }}>Rate</th>
+                  <th style={{ width: 90 }}>Bin</th>
+                  <th style={{ width: 36 }}></th>
+                </tr></thead> */}
+                {/* <tbody>
+                  {form.lines.map((l, i) => (
+                    <tr key={i}>
+                      <td>
+                        <Typeahead
+                          value={l.item_name}
+                          onChange={(name) => setLine(i, { item_name: name })}
+                          onSelect={(it) => setLine(i, { item_name: it.name, item_zoho_id: it.zoho_item_id || '', rate: l.rate || it.rate || '' })}
+                          endpoint="/api/sync/zoho/items"
+                          idField="zoho_item_id"
+                          placeholder="Search item…"
+                        />
+                      </td>
+                      <td>
+                        <input type="number" min="0" className="text-right" value={l.so_qty}
+                          onChange={e => setLine(i, { so_qty: e.target.value })} />
+                      </td>
+                      <td>
+                        <input type="number" min="0" className="text-right" value={l.rate}
+                          onChange={e => setLine(i, { rate: e.target.value })} />
+                      </td>
+                      <td>
+                        <input value={l.bin_location}
+                          onChange={e => setLine(i, { bin_location: e.target.value })} />
+                      </td>
+                      <td className="text-center">
+                        <button className="btn-sm btn-secondary" title="Remove line"
+                          onClick={() => removeLine(i)} disabled={form.lines.length === 1}>✕</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody> */}
+              </table>
+              {/* <button className="btn-sm btn-secondary mb-md" onClick={addLine}>+ Add line</button> */}
+
+              <div className="divider"></div>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                {/* <button className="btn-secondary" onClick={() => !saving && setShowNew(false)} disabled={saving}>
+                  Cancel
+                </button> */}
+                <button className="btn-secondary" onClick={() => !saving && closeNew()} disabled={saving}>
+                  Cancel
+                </button>
+                <button className="btn-primary" onClick={createDispatch} disabled={!canSave || saving}>
+                  {saving ? 'Creating…' : 'Create Dispatch'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
-}
+} 

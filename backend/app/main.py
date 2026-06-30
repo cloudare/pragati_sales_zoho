@@ -26,6 +26,7 @@ from .api.approvals import router as approvals_router
 from .api.dispatch import router as dispatch_router
 from .api.webhooks import router as webhooks_router
 from .api.sync import router as sync_router
+from .api.sales_orders import router as sales_orders_router
 
 
 # slowapi limiter - key by client IP (respects X-Forwarded-For if behind nginx)
@@ -124,6 +125,7 @@ def create_app() -> FastAPI:
     app.include_router(dispatch_router)
     app.include_router(webhooks_router)
     app.include_router(sync_router)
+    app.include_router(sales_orders_router)
 
     return app
 
