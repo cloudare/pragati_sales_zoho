@@ -84,6 +84,25 @@ class EInvoiceResponse(BaseModel):
     eway_valid_upto: Optional[datetime] = None
 
 
+class PickLine(BaseModel):
+    line_id: int
+    picked_qty: float
+    short_pick_qty: float = 0
+
+
+class PickRequest(BaseModel):
+    lines: List[PickLine]
+    notes: Optional[str] = None
+
+
+class GeneratePicklistRequest(BaseModel):
+    picklist_number: str = Field(..., min_length=1)  # Required
+
+
+class InvoiceGenerateRequest(BaseModel):
+    mark_as_sent: bool = False
+
+
 # ============================ helpers ============================
 def _gen_dispatch_number(db: Session) -> str:
     year = datetime.now(timezone.utc).strftime("%Y")
@@ -109,6 +128,7 @@ def _out(d: DispatchOrder) -> dict:
         "amendment_reason": d.amendment_reason,
         "picked_at": d.picked_at.isoformat() if d.picked_at else None,
         "zoho_invoice_ids": d.zoho_invoice_ids, "invoiced_at": d.invoiced_at.isoformat() if d.invoiced_at else None,
+        "zoho_picklist_id": d.zoho_picklist_id,
         "zoho_package_id": d.zoho_package_id,
         "packed_at": d.packed_at.isoformat() if d.packed_at else None,
         "lr_number": d.lr_number, "transporter_name": d.transporter_name,
@@ -122,7 +142,6 @@ def _out(d: DispatchOrder) -> dict:
         "gate_out_slip_number": d.gate_out_slip_number,
         "gate_out_at": d.gate_out_at.isoformat() if d.gate_out_at else None,
         "closed_at": d.closed_at.isoformat() if d.closed_at else None,
-        "closure_notes": d.closure_notes,
         "lines": [{
             "id": l.id, "item_zoho_id": l.item_zoho_id, "item_name": l.item_name,
             "bin_location": l.bin_location, "so_qty": l.so_qty,
@@ -220,19 +239,122 @@ def create_dispatch(req: DispatchCreate, db: Session = Depends(get_db),
 
 # ============================ Step 2: generate picklist ============================
 @router.post("/{dispatch_id}/picklist")
-def generate_picklist(dispatch_id: int, db: Session = Depends(get_db),
-                      user: User = Depends(require_roles(UserRole.warehouse, UserRole.admin))):
-    """Step 2: Picklist generated for warehouse."""
-    d = db.query(DispatchOrder).filter(DispatchOrder.id == dispatch_id).first()
+def generate_picklist(
+    dispatch_id: int,
+    req: GeneratePicklistRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(
+        require_roles(UserRole.warehouse, UserRole.admin)
+    )
+):
+    d = (
+        db.query(DispatchOrder)
+        .filter(DispatchOrder.id == dispatch_id)
+        .first()
+    )
+
     if not d:
-        raise HTTPException(status_code=404, detail="Dispatch not found")
+        raise HTTPException(
+            status_code=404,
+            detail="Dispatch not found"
+        )
+
     if d.status != PicklistStatus.so_confirmed:
-        raise HTTPException(status_code=400,
-                            detail=f"Picklist already generated (status={d.status.value})")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Picklist already generated (status={d.status.value})"
+        )
+
+    from ..integrations.zoho import (
+        get_zoho_inventory_client
+    )
+
+    inventory = get_zoho_inventory_client()
+
+    so_ids = [
+        str(s).strip()
+        for s in (d.so_zoho_ids or [])
+        if str(s).strip().isdigit()
+    ]
+
+    if not so_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="No Sales Order linked to dispatch."
+        )
+
+    from ..integrations.zoho import get_zoho_client
+    zoho = get_zoho_client()
+
+    so = zoho.get_sales_order(so_ids[0])
+    salesorder = so.get("salesorder", {})
+    location_id = salesorder.get("location_id")
+
+    line_items = []
+
+    for li in salesorder.get("line_items", []):
+        qty = float(li.get("quantity", 0))
+
+        if qty > 0:
+            line_items.append({
+                "so_line_item_id": li["line_item_id"],
+                "quantity": qty,
+            })
+    try:
+        result = inventory.create_picklist(
+            salesorder_id=so_ids[0],
+            line_items=line_items,
+            location_id=location_id,
+            # picklist_name=d.dispatch_number,
+            picklist_name=req.picklist_number or d.dispatch_number,
+            date=datetime.now(
+                timezone.utc
+            ).strftime("%Y-%m-%d"),
+        )
+
+        picklist = result.get("picklist", {})
+        d.zoho_picklist_id = picklist.get(
+            "picklist_id"
+        )
+
+        by_so_line_id = {
+            pli.get("so_line_item_id"): pli.get("line_item_id")
+            for pli in picklist.get("line_items", [])
+        }
+
+        so_line_by_item = {
+            li.get("item_id"): li.get("line_item_id")
+            for li in salesorder.get("line_items", [])
+        }
+        for l in d.lines:
+            so_lid = so_line_by_item.get(l.item_zoho_id)
+            if so_lid and so_lid in by_so_line_id:
+                l.zoho_picklist_line_item_id = by_so_line_id[so_lid]
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Zoho picklist creation failed: {e}"
+        )
+
     d.status = PicklistStatus.picklist_generated
-    d.picklist_generated_at = datetime.now(timezone.utc)
-    _audit(db, user, "dispatch.picklist_generated", d)
+    d.picklist_generated_at = datetime.now(
+        timezone.utc
+    )
+
+    _audit(
+        db,
+        user,
+        "dispatch.picklist_generated",
+        d,
+        {
+            "picklist_id": d.zoho_picklist_id
+        }
+    )
+
     db.commit()
+    db.refresh(d)
+
     return _out(d)
 
 
@@ -290,77 +412,102 @@ def amend(dispatch_id: int, req: AmendRequest, db: Session = Depends(get_db),
 
 # ============================ Step 4: pick ============================
 @router.post("/{dispatch_id}/pick")
-def pick(dispatch_id: int, req: PickRequest, db: Session = Depends(get_db),
-         user: User = Depends(require_roles(UserRole.warehouse, UserRole.admin))):
-    """Step 4: Warehouse picks goods, confirms quantities."""
+def pick(
+    dispatch_id: int,
+    req: PickRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.warehouse, UserRole.admin))
+):
+    """Step 4: Confirm warehouse pick quantities and create package in Zoho."""
     d = db.query(DispatchOrder).filter(DispatchOrder.id == dispatch_id).first()
     if not d:
         raise HTTPException(status_code=404, detail="Dispatch not found")
-    if d.status not in (PicklistStatus.picklist_generated, PicklistStatus.amended, PicklistStatus.picking):
-        raise HTTPException(status_code=400,
-                            detail=f"Cannot pick when status is {d.status.value}")
 
+    if d.status not in (PicklistStatus.picklist_generated, PicklistStatus.amended, PicklistStatus.picking):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot pick when status is {d.status.value}"
+        )
+
+    # Validate all lines before applying changes
     line_map = {l.id: l for l in d.lines}
+    errors = []
+
     for p in req.lines:
         line = line_map.get(p.line_id)
         if not line:
             raise HTTPException(status_code=400, detail=f"Line {p.line_id} not on this dispatch")
+
+        ordered = line.amended_qty if line.amended_qty is not None else line.so_qty
+
+        if p.picked_qty < 0 or p.short_pick_qty < 0:
+            errors.append(f"{line.item_name}: quantities cannot be negative")
+        if p.picked_qty + p.short_pick_qty != ordered:
+            errors.append(
+                f"{line.item_name}: picked ({p.picked_qty}) + short ({p.short_pick_qty}) must equal ordered ({ordered})"
+            )
+
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    # Apply picked quantities
+    for p in req.lines:
+        line = line_map[p.line_id]
         line.picked_qty = p.picked_qty
         line.short_pick_qty = p.short_pick_qty
+
     d.status = PicklistStatus.picked
     d.picked_at = datetime.now(timezone.utc)
     d.picker_user_id = user.id
-    _audit(db, user, "dispatch.picked", d)
+
+    _audit(db, user, "dispatch.picked", d, {"lines": len(req.lines)})
     db.commit()
 
-    # Step 4 (Zoho Inventory): create a Package against the linked Sales Order using the
-    # picked quantities. Zoho identifies packed lines by the SO's line_item_id, so we
-    # re-fetch the SO and match our dispatch lines by item_zoho_id. Best-effort: a Zoho
-    # error must not undo the pick, which is already committed.
+    # Step 4 (Zoho): Create Package using picked quantities
+    # This marks the picklist as "Completed" in Zoho
+    # Step 4 (Zoho): Create Package using picked quantities
     so_ids = [str(s).strip() for s in (d.so_zoho_ids or []) if str(s).strip().isdigit()]
-    if so_ids and not d.zoho_package_id:
-        from ..integrations.zoho import get_zoho_client
-        zoho = get_zoho_client()
-        try:
-            # Map item_zoho_id -> SO line_item_id from the (first) linked SO.
-            so_resp = zoho.get_sales_order(so_ids[0])
-            so_obj = so_resp.get("salesorder") or {}
-            item_to_soline = {}
-            for li in so_obj.get("line_items", []) or []:
-                if li.get("item_id"):
-                    item_to_soline[li["item_id"]] = li.get("line_item_id")
+    if so_ids and d.zoho_picklist_id:
+        from ..integrations.zoho import get_zoho_inventory_client
+        inventory = get_zoho_inventory_client()
 
-            pkg_lines = []
-            for line in d.lines:
-                qty = line.picked_qty or 0
-                so_line_id = item_to_soline.get(line.item_zoho_id)
-                if qty > 0 and so_line_id:
-                    pkg_lines.append({"so_line_item_id": so_line_id, "quantity": qty})
+        picklist_line_items = [
+            {"line_item_id": l.zoho_picklist_line_item_id, "quantity_picked": l.picked_qty}
+            for l in d.lines
+            if l.picked_qty > 0 and l.zoho_picklist_line_item_id
+        ]
 
-            if pkg_lines:
-                pkg = zoho.create_package(
-                    salesorder_id=so_ids[0],
-                    line_items=pkg_lines,
-                    package_number=d.dispatch_number,
-                )
-                pkg_id = (pkg.get("package") or {}).get("package_id") or pkg.get("package_id")
-                d.zoho_package_id = pkg_id
-                d.packed_at = datetime.now(timezone.utc)
-                _audit(db, user, "dispatch.packed_in_zoho", d, {"package_id": pkg_id})
+        if picklist_line_items:
+            try:
+                inventory.update_picklist(d.zoho_picklist_id, picklist_line_items)
+                _audit(db, user, "dispatch.picklist_picked", d, {
+                    "picklist_id": d.zoho_picklist_id,
+                    "lines_picked": len(picklist_line_items),
+                })
+            except Exception as e:
+                _audit(db, user, "dispatch.picklist_update_failed", d, {
+                    "picklist_id": d.zoho_picklist_id, "error": str(e)[:300]
+                })
                 db.commit()
-        except Exception as e:
-            _audit(db, user, "dispatch.package_failed", d, {"error": str(e)[:300]})
-            db.commit()
+                raise HTTPException(status_code=502, detail=f"Zoho picklist update failed: {e}")
+        else:
+            # No lines mapped to a picklist line_item_id — almost certainly
+            # means Step 2 ran before this fix was deployed. Flag it instead
+            # of silently no-op'ing like the old stub did.
+            _audit(db, user, "dispatch.picklist_update_skipped", d,
+                   {"reason": "no zoho_picklist_line_item_id on any line"})
+
+        db.commit()
 
     db.refresh(d)
-    
     return _out(d)
 
 
 # ============================ Step 5: invoice (Zoho) ============================
 @router.post("/{dispatch_id}/invoice")
-def generate_invoice(dispatch_id: int, db: Session = Depends(get_db),
-                     user: User = Depends(require_roles(UserRole.sales, UserRole.accounts, UserRole.admin))):
+def generate_invoice(dispatch_id: int, req: InvoiceGenerateRequest = InvoiceGenerateRequest(),
+                    db: Session = Depends(get_db),
+                    user: User = Depends(require_roles(UserRole.sales, UserRole.accounts, UserRole.admin))):
     """Step 5: Generate invoice in Zoho Books from picked quantities."""
     d = db.query(DispatchOrder).filter(DispatchOrder.id == dispatch_id).first()
     if not d:
@@ -389,10 +536,25 @@ def generate_invoice(dispatch_id: int, db: Session = Depends(get_db),
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Zoho invoice creation failed: {e}")
 
+    sent_ok = None
+    if req.mark_as_sent and zoho_invoice_id:
+        try:
+            zoho.mark_invoice_as_sent(zoho_invoice_id)
+            sent_ok = True
+        except Exception as e:
+            sent_ok = False
+            _audit(db, user, "dispatch.invoice_mark_sent_failed", d,
+                   {"zoho_invoice_id": zoho_invoice_id, "error": str(e)[:300]})
+            
     d.zoho_invoice_ids = (d.zoho_invoice_ids or []) + [zoho_invoice_id]
     d.invoiced_at = datetime.now(timezone.utc)
     d.status = PicklistStatus.invoiced
-    _audit(db, user, "dispatch.invoiced", d, {"zoho_invoice_id": zoho_invoice_id})
+    # _audit(db, user, "dispatch.invoiced", d, {"zoho_invoice_id": zoho_invoice_id})
+    _audit(db, user, "dispatch.invoiced", d, {
+        "zoho_invoice_id": zoho_invoice_id,
+        "mark_as_sent_requested": req.mark_as_sent,
+        "mark_as_sent_succeeded": sent_ok,
+    })
     db.commit()
     return _out(d)
 
@@ -532,3 +694,4 @@ def get_dispatch(dispatch_id: int, db: Session = Depends(get_db), user: User = D
     if not d:
         raise HTTPException(status_code=404, detail="Dispatch not found")
     return _out(d)
+

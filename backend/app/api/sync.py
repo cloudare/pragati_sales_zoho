@@ -18,10 +18,10 @@ from sqlalchemy.orm import Session
 from ..core.database import get_db
 from ..core.deps import require_roles
 from ..models import (
-    TallyOutboundQueue, ZohoItemCache, ZohoContactCache, User, UserRole
+    TallyOutboundQueue, ZohoItemCache, ZohoContactCache, User, UserRole, ZohoLocationCache
 )
 from ..services.tally_outbound import drain_outbound_queue, reconciliation_report
-from ..services.zoho_master_sync import sync_items, sync_contacts
+from ..services.zoho_master_sync import sync_items, sync_contacts, sync_locations
 from ..integrations.zoho import (get_zoho_client, get_zoho_inventory_client,)
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
@@ -79,6 +79,21 @@ def trigger_item_sync(db: Session = Depends(get_db)):
 def trigger_contact_sync(db: Session = Depends(get_db)):
     return sync_contacts(db)
 
+@router.post("/zoho/locations", dependencies=[Depends(require_roles(UserRole.admin, UserRole.accounts))])
+def trigger_location_sync(db: Session = Depends(get_db)):
+    return sync_locations(db)
+
+
+@router.get("/zoho/locations")
+def list_locations_cache(q: Optional[str] = None, limit: int = 200, db: Session = Depends(get_db)):
+    query = db.query(ZohoLocationCache).filter(ZohoLocationCache.is_active.is_(True))
+    if q:
+        query = query.filter(ZohoLocationCache.name.ilike(f"%{q}%"))
+    return [{
+        "zoho_location_id": r.zoho_location_id, "name": r.name, "type": r.type,
+        "gstin": r.gstin, "address": r.address, "is_primary": r.is_primary,
+        "last_synced_at": r.last_synced_at.isoformat() if r.last_synced_at else None,
+    } for r in query.order_by(ZohoLocationCache.name).limit(limit).all()]
 
 @router.get("/zoho/items")
 def list_items_cache(q: Optional[str] = None, brand: Optional[str] = None,

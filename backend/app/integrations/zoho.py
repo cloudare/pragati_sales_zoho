@@ -152,7 +152,7 @@ class ZohoBooksClient:
         """
         return self._request("POST", f"/salesorders/{salesorder_id}/status/open")
     
-    def create_package(self, salesorder_id: str, line_items: list, package_number: str | None = None,
+    def create_package(self, salesorder_id: str | None = None, picklist_id: str | None = None, line_items: list | None = None, package_number: str | None = None,
                        date: str | None = None, notes: str | None = None) -> dict:
         """Create a Zoho Inventory Package against a sales order.
 
@@ -161,17 +161,25 @@ class ZohoBooksClient:
         """
         payload: dict = {
             "line_items": [
-                {"so_line_item_id": li["so_line_item_id"], "quantity": li["quantity"]}
+                {"so_line_item_id": li["so_line_item_id"], "quantity_to_be_picked": li["quantity"]}
                 for li in line_items
             ]
         }
+
+        params = {}
+        if picklist_id:
+            params["picklist_id"] = picklist_id
+        elif salesorder_id:
+            params["salesorder_id"] = salesorder_id
+
         if package_number:
             payload["package_number"] = package_number
         if date:
             payload["date"] = date
         if notes:
             payload["notes"] = notes
-        return self._request("POST", "/packages", params={"salesorder_id": salesorder_id}, json=payload)
+        # return self._request("POST", "/packages", params={"salesorder_id": salesorder_id}, json=payload)
+        return self._request("POST", "/packages", params=params, json=payload)
 
     # ---------- INVOICES ----------
     def create_invoice(self, payload: dict) -> dict:
@@ -179,6 +187,11 @@ class ZohoBooksClient:
 
     def get_invoice(self, invoice_id: str) -> dict:
         return self._request("GET", f"/invoices/{invoice_id}")
+
+    # ---------- LOCATIONS (multi-location master) ----------
+    def list_locations(self) -> dict:
+        """List organization locations from Zoho Books/Inventory settings."""
+        return self._request("GET", "/locations")
 
     def list_invoices(self, customer_name: str | None = None, status: str | None = None,
                       page: int = 1, per_page: int = 200) -> dict:
@@ -196,6 +209,9 @@ class ZohoBooksClient:
     # ---------- PAYMENTS ----------
     def create_customer_payment(self, payload: dict) -> dict:
         return self._request("POST", "/customerpayments", json=payload)
+
+    def mark_invoice_as_sent(self, invoice_id: str) -> dict:
+        return self._request("POST", f"/invoices/{invoice_id}/status/sent")
 
 class ZohoInventoryClient:
     def __init__(self):
@@ -264,25 +280,6 @@ class ZohoInventoryClient:
             json=payload,
         )
     
-    # def list_purchase_orders(
-    #     self,
-    #     vendor_id: str | None = None,
-    #     page: int = 1,
-    #     per_page: int = 200,
-    # ) -> dict:
-    #     params = {
-    #         "page": page,
-    #         "per_page": per_page,
-    #     }
-
-    #     if vendor_id:
-    #         params["vendor_id"] = vendor_id
-
-    #     return self._request(
-    #         "GET",
-    #         "/purchaseorders",
-    #         params=params,
-    #     )
     def list_purchase_orders(
         self,
         vendor_id: str | None = None,
@@ -320,6 +317,85 @@ class ZohoInventoryClient:
             f"/purchaseorders/{purchase_order_id}",
         )
 
+    def create_picklist(
+        self,
+        salesorder_id: str,
+        line_items: list,
+        location_id=None,
+        picklist_name: str | None = None,
+        date: str | None = None,
+    ):
+        # payload = {
+        #     "line_items": line_items,
+        # }
+        payload = {
+            "line_items": [
+                {
+                    "so_line_item_id": li["so_line_item_id"],
+                    "quantity_to_be_picked": li["quantity"]
+                }
+                for li in line_items
+            ]
+        }
+        
+
+        if location_id:
+            payload["location_id"] = location_id
+
+        if picklist_name:
+            payload["picklist_number"] = picklist_name
+
+        if date:
+            payload["date"] = date
+
+        if picklist_name:
+            payload["picklist_number"] = picklist_name
+
+        return self._request("POST", "/picklists", params={"salesorder_id": salesorder_id}, json=payload)
+
+    def create_package(self, salesorder_id: str | None = None, picklist_id: str | None = None, line_items: list | None = None, package_number: str | None = None,
+                       date: str | None = None, notes: str | None = None) -> dict:
+        """Create a Zoho Inventory Package against a sales order.
+
+        line_items: list of {"so_line_item_id": <SO line id>, "quantity": <picked qty>}.
+        Zoho identifies each packed line by the SALES ORDER line_item_id, not the item id.
+        """
+
+        if not salesorder_id and not picklist_id:
+            raise ValueError("Either salesorder_id or picklist_id must be provided")
+        
+        payload: dict = {
+            "line_items": [
+                {"so_line_item_id": li["so_line_item_id"], "quantity": li["quantity"]}
+                for li in line_items
+            ]
+        }
+
+        params = {}
+        if picklist_id:
+            params["picklist_id"] = picklist_id
+        else:
+            params["salesorder_id"] = salesorder_id
+            
+        if package_number:
+            payload["package_number"] = package_number
+        if date:
+            payload["date"] = date
+        if notes:
+            payload["notes"] = notes
+
+        # return self._request("POST", "/packages", params={"salesorder_id": salesorder_id}, json=payload)
+        return self._request("POST", "/packages", params=params, json=payload)
+    
+    def set_picklist_status(self, picklist_id: str, status: str) -> dict:
+        return self._request(
+            "POST",
+            f"/picklists/{picklist_id}/markAs/{status}",
+        )
+    
+    def update_picklist(self, picklist_id: str, line_items: list) -> dict:
+        return self._request("PUT", f"/picklists/{picklist_id}", json={"line_items": line_items})
+        
 # Singleton
 zoho_client = ZohoBooksClient()
 zoho_inventory_client = ZohoInventoryClient()

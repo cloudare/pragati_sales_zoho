@@ -7,6 +7,8 @@ export default function MasterSync() {
   const [error, setError] = useState('');
   const [queue, setQueue] = useState([]);
   const [recon, setRecon] = useState(null);
+  const [locResult, setLocResult] = useState(null);
+  const [locBusy, setLocBusy] = useState(false);
 
   const run = async (label, path) => {
     setBusy(label); setError(''); setResult(null);
@@ -23,7 +25,12 @@ export default function MasterSync() {
     try { setRecon((await api.get('/api/sync/tally/reconciliation?days=7')).data); }
     catch (e) { setError(e.response?.data?.detail || String(e)); }
   };
-
+  const syncLocations = async () => {
+    setLocBusy(true);
+    try { setLocResult((await api.post('/api/sync/zoho/locations')).data); }
+    catch (e) { setLocResult({ error: e.response?.data?.detail || String(e) }); }
+    finally { setLocBusy(false); }
+  };
   return (
     <>
       {error && <div className="alert alert-error">{error}</div>}
@@ -48,7 +55,18 @@ export default function MasterSync() {
                 onClick={() => run('contacts', '/api/sync/zoho/contacts')}>
                 {busy === 'contacts' ? 'Syncing contacts…' : 'Sync Contacts'}
               </button>
+              <button className="btn-primary" disabled={locBusy}
+                onClick={syncLocations}>
+                {locBusy ? 'Syncing locations…' : 'Sync Locations'}
+              </button>
             </div>
+            {locResult && (
+              <p className="text-small mt-sm" style={{ marginTop: 12 }}>
+                {locResult.error
+                  ? <span style={{ color: '#dc2626' }}>Error: {locResult.error}</span>
+                  : <span>Synced {locResult.synced} location(s).</span>}
+              </p>
+            )}
           </div>
         </div>
 

@@ -417,6 +417,9 @@ class DispatchOrder(Base):
     zoho_invoice_ids = Column(JSON, default=list)
     invoiced_at = Column(DateTime(timezone=True))
 
+    # Zoho Inventory Picklist
+    zoho_picklist_id = Column(String(64))
+
     # Zoho Inventory package (created at pick time from picked quantities)
     zoho_package_id = Column(String(64))
     packed_at = Column(DateTime(timezone=True))
@@ -469,7 +472,7 @@ class DispatchLine(Base):
     short_pick_qty = Column(Float, default=0)
     rate = Column(Float, default=0)
     notes = Column(String(256))
-
+    zoho_picklist_line_item_id = Column(String, nullable=True)
     dispatch = relationship("DispatchOrder", back_populates="lines")
 
 
@@ -589,6 +592,21 @@ class ZohoWebhookEvent(Base):
     processed_at = Column(DateTime(timezone=True))
     processing_error = Column(Text)
 
+
+# ============================================================
+# ZOHO LOCATION CACHE — multi-location/warehouse master from Zoho
+# ============================================================
+class ZohoLocationCache(Base):
+    __tablename__ = "zoho_location_cache"
+    id = Column(Integer, primary_key=True)
+    zoho_location_id = Column(String(64), unique=True, nullable=False, index=True)
+    name = Column(String(256), nullable=False, index=True)
+    type = Column(String(32))            # business | warehouse
+    gstin = Column(String(32))
+    address = Column(String(512))
+    is_primary = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True)
+    last_synced_at = Column(DateTime(timezone=True), server_default=func.now())
 
 # ============================================================
 # OUTBOUND TALLY SYNC QUEUE (PRD M14: Zoho → Tally direction)
